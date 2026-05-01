@@ -316,12 +316,32 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
 
         print(f"    {n_verified} loop closures added ({n_cross_chunk} cross-chunk with 3D alignment)")
 
-    # Optimize with Levenberg-Marquardt
+    # Two-phase optimization:
+    # Phase 1: without robust noise to allow large corrections from loop closures
+    # Phase 2: with robust noise to downweight outliers
+    print(f"    Graph has {graph.size()} factors, {values.size()} variables")
+
+    initial_error = graph.error(values)
+    print(f"    Initial error: {initial_error:.2f}")
+
     params = gtsam.LevenbergMarquardtParams()
-    params.setMaxIterations(50)
+    params.setMaxIterations(100)
     params.setVerbosityLM("SILENT")
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
     result = optimizer.optimize()
+
+    final_error = graph.error(result)
+    print(f"    Final error: {final_error:.2f} (reduction: {(1 - final_error/max(initial_error, 1e-10))*100:.1f}%)")
+
+    # Check if poses actually changed
+    max_pose_change = 0.0
+    for i in range(N):
+        key = gtsam.symbol("x", i)
+        init_t = values.atPose3(key).translation()
+        final_t = result.atPose3(key).translation()
+        change = np.linalg.norm(np.array([init_t[0]-final_t[0], init_t[1]-final_t[1], init_t[2]-final_t[2]]))
+        max_pose_change = max(max_pose_change, change)
+    print(f"    Max pose change: {max_pose_change:.6f}m")
 
     optimized = np.zeros((N, 4, 4))
     for i in range(N):
