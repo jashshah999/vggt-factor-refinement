@@ -97,7 +97,10 @@ def _run_vggt_batch(model, images_torch, device):
     # Get extrinsics from pose_enc
     from vggt.utils.pose_enc import pose_encoding_to_extri_intri
     pose_enc = predictions["pose_enc"]
-    extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc)
+    img_h, img_w = images_torch.shape[2], images_torch.shape[3]
+    extrinsics, intrinsics = pose_encoding_to_extri_intri(
+        pose_enc, image_size_hw=(img_h, img_w)
+    )
     extrinsics = extrinsics[0].float().cpu().numpy()  # (N, 3, 4)
 
     depth = predictions["depth"][0].float().cpu().numpy()  # (N, H, W)
