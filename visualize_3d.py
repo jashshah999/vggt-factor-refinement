@@ -59,30 +59,60 @@ def draw_frustum(ax, pose, color, size=0.08, alpha=0.3):
               color=color, alpha=alpha, lw=0.8)
 
 
-def render_scene(gt_poses, naive_poses, fg_poses, points, point_conf,
-                 elev=30, azim=45, title="", save_path="scene.png"):
-    """Render 3D scene with point cloud and camera frustums."""
-    fig = plt.figure(figsize=(14, 10))
-    ax = fig.add_subplot(111, projection="3d")
+def _prepare_colored_pointcloud(points, point_conf, images, max_pts=50000, stride=4):
+    """Extract colored point cloud from VGGT outputs."""
+    N, H, W, _ = points.shape
+    pts_all = []
+    cols_all = []
 
-    # Subsample and filter point cloud
-    pts = points.reshape(-1, 3)
-    conf = point_conf.ravel()
-    mask = (conf > 0.3) & np.isfinite(pts).all(axis=1)
-    pts = pts[mask]
+    for i in range(N):
+        p = points[i, ::stride, ::stride].reshape(-1, 3)
+        c = point_conf[i, ::stride, ::stride].ravel()
+        img_resized = cv2.resize(images[i], (W, H))
+        rgb = img_resized[::stride, ::stride].reshape(-1, 3)
 
-    if len(pts) > 50000:
-        idx = np.random.choice(len(pts), 50000, replace=False)
+        mask = (c > 0.3) & np.isfinite(p).all(axis=1)
+        pts_all.append(p[mask])
+        cols_all.append(rgb[mask])
+
+    pts = np.concatenate(pts_all)
+    cols = np.concatenate(cols_all)
+
+    if len(pts) > max_pts:
+        idx = np.random.choice(len(pts), max_pts, replace=False)
         pts = pts[idx]
+        cols = cols[idx]
 
     # Filter outliers
     center = np.median(pts, axis=0)
     dists = np.linalg.norm(pts - center, axis=1)
-    pts = pts[dists < np.percentile(dists, 95)]
+    keep = dists < np.percentile(dists, 95)
+    return pts[keep], cols[keep]
 
-    # Plot point cloud
-    ax.scatter(pts[::5, 0], pts[::5, 1], pts[::5, 2],
-               s=0.1, c="gray", alpha=0.15)
+
+def render_scene(gt_poses, naive_poses, fg_poses, points, point_conf,
+                 images=None, elev=30, azim=45, title="", save_path="scene.png"):
+    """Render 3D scene with point cloud and camera frustums."""
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection="3d")
+
+    if images is not None:
+        pts, cols = _prepare_colored_pointcloud(points, point_conf, images)
+        ax.scatter(pts[::3, 0], pts[::3, 1], pts[::3, 2],
+                   s=0.3, c=cols[::3], alpha=0.4)
+    else:
+        pts = points.reshape(-1, 3)
+        conf = point_conf.ravel()
+        mask = (conf > 0.3) & np.isfinite(pts).all(axis=1)
+        pts = pts[mask]
+        if len(pts) > 50000:
+            idx = np.random.choice(len(pts), 50000, replace=False)
+            pts = pts[idx]
+        center = np.median(pts, axis=0)
+        dists = np.linalg.norm(pts - center, axis=1)
+        pts = pts[dists < np.percentile(dists, 95)]
+        ax.scatter(pts[::5, 0], pts[::5, 1], pts[::5, 2],
+                   s=0.1, c="gray", alpha=0.15)
 
     # Align trajectories for fair comparison
     if gt_poses is not None:
@@ -137,9 +167,25 @@ def render_scene(gt_poses, naive_poses, fg_poses, points, point_conf,
 
 
 def render_orbit_gif(gt_poses, naive_poses, fg_poses, points, point_conf,
-                     save_path="orbit.gif", n_frames=36):
+                     images=None, save_path="orbit.gif", n_frames=36):
     """Render an orbiting GIF around the scene."""
     import imageio
+
+    # Precompute point cloud once
+    if images is not None:
+        pts, cols = _prepare_colored_pointcloud(points, point_conf, images, max_pts=30000)
+    else:
+        pts_raw = points.reshape(-1, 3)
+        conf = point_conf.ravel()
+        mask = (conf > 0.3) & np.isfinite(pts_raw).all(axis=1)
+        pts = pts_raw[mask]
+        if len(pts) > 30000:
+            idx = np.random.choice(len(pts), 30000, replace=False)
+            pts = pts[idx]
+        center = np.median(pts, axis=0)
+        dists = np.linalg.norm(pts - center, axis=1)
+        pts = pts[dists < np.percentile(dists, 95)]
+        cols = None
 
     frames = []
     for i in range(n_frames):
@@ -147,20 +193,12 @@ def render_orbit_gif(gt_poses, naive_poses, fg_poses, points, point_conf,
         fig = plt.figure(figsize=(10, 8))
         ax = fig.add_subplot(111, projection="3d")
 
-        # Subsample points
-        pts = points.reshape(-1, 3)
-        conf = point_conf.ravel()
-        mask = (conf > 0.3) & np.isfinite(pts).all(axis=1)
-        pts = pts[mask]
-        if len(pts) > 30000:
-            idx = np.random.choice(len(pts), 30000, replace=False)
-            pts = pts[idx]
-        center = np.median(pts, axis=0)
-        dists = np.linalg.norm(pts - center, axis=1)
-        pts = pts[dists < np.percentile(dists, 95)]
-
-        ax.scatter(pts[::5, 0], pts[::5, 1], pts[::5, 2],
-                   s=0.1, c="gray", alpha=0.1)
+        if cols is not None:
+            ax.scatter(pts[::3, 0], pts[::3, 1], pts[::3, 2],
+                       s=0.3, c=cols[::3], alpha=0.3)
+        else:
+            ax.scatter(pts[::5, 0], pts[::5, 1], pts[::5, 2],
+                       s=0.1, c="gray", alpha=0.1)
 
         if gt_poses is not None:
             naive_aligned = align_trajectories(gt_poses, naive_poses)
@@ -245,7 +283,7 @@ def main():
     for elev, azim, name in [(30, 45, "view1"), (60, 0, "topdown"), (15, 90, "side")]:
         render_scene(
             data["gt_poses"], results["naive_poses"], results["fg_poses"],
-            vggt_out["points"], vggt_out["point_conf"],
+            vggt_out["points"], vggt_out["point_conf"], images=data["images"],
             elev=elev, azim=azim,
             title=f"TUM {args.seq} (ATE: naive={results['naive_ate']['ate_mean']:.3f}m, FG={results['fg_ate']['ate_mean']:.3f}m)",
             save_path=os.path.join(out_dir, f"{name}.png"),
@@ -255,7 +293,7 @@ def main():
         print("\nRendering orbit GIF...")
         render_orbit_gif(
             data["gt_poses"], results["naive_poses"], results["fg_poses"],
-            vggt_out["points"], vggt_out["point_conf"],
+            vggt_out["points"], vggt_out["point_conf"], images=data["images"],
             save_path=os.path.join(out_dir, "orbit.gif"),
         )
 
