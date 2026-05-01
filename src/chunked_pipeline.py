@@ -250,35 +250,43 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
                 noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.1)
                 graph.addPriorPose3(key_i, _mat_to_pose3(aligned), noise)
 
-    # Loop closure: find distant frame pairs with visual overlap
-    # Use robust noise (Cauchy) so bad loop closures don't dominate
+    # Loop closure: appearance-based using DINOv2 descriptors.
+    # This finds revisited locations even when the trajectory has drifted
+    # far from the true position (position-based detection would miss these).
     if images is not None:
+        from .loop_closure import build_frame_descriptors, find_appearance_loop_closures
         from .factor_graph import _count_match_inliers
-        positions = init_poses[:, :3, 3]
-        lc_candidates = []
-        for i in range(0, N, 3):  # sample every 3rd frame to limit O(N^2)
-            for j in range(i + 20, N, 3):
-                dist = np.linalg.norm(positions[i] - positions[j])
-                if dist < 1.0:
-                    n_inliers = _count_match_inliers(images[i], images[j])
-                    if n_inliers >= 50:
-                        lc_candidates.append((i, j, n_inliers))
 
-        # Keep top-k by inlier count
-        lc_candidates.sort(key=lambda x: -x[2])
-        lc_candidates = lc_candidates[:30]
+        print("    Computing appearance descriptors...")
+        descriptors = build_frame_descriptors(images, device="cuda")
+        appearance_lc = find_appearance_loop_closures(
+            descriptors, similarity_threshold=0.65, min_frame_gap=15, max_closures=50,
+        )
+        print(f"    Found {len(appearance_lc)} appearance-based loop closures")
 
-        for i, j, n_inliers in lc_candidates:
+        # Verify each with geometric matching and add to graph
+        n_verified = 0
+        for i, j, sim_score in appearance_lc:
+            n_inliers = _count_match_inliers(images[i], images[j])
+            if n_inliers < 30:
+                continue
+
             ki = gtsam.symbol("x", i)
             kj = gtsam.symbol("x", j)
             rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
-            base_noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.2)
+
+            # Tighter noise for high-similarity pairs
+            sigma = 0.15 if sim_score > 0.8 else 0.25
+            base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
             robust_noise = gtsam.noiseModel.Robust.Create(
                 gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
             )
             graph.add(gtsam.BetweenFactorPose3(
                 ki, kj, _mat_to_pose3(rel), robust_noise
             ))
+            n_verified += 1
+
+        print(f"    {n_verified} verified loop closures added to graph")
 
     # Optimize with Levenberg-Marquardt
     params = gtsam.LevenbergMarquardtParams()
