@@ -131,6 +131,26 @@ VGGT processes each chunk independently with no mechanism to enforce that:
 
 A factor graph provides all three. It takes VGGT's output as initial estimates and soft constraints, then optimizes for global consistency. The optimization adds ~2s of compute on top of VGGT inference.
 
+## Limitations
+
+- **Non-looping trajectories at 200+ frames.** When the camera never revisits a location, loop closures can't correct accumulated drift. The factor graph helps up to ~120 frames via odometry smoothing alone, but plateaus beyond that. Sequences with actual revisits (like TUM fr1/room) work well even at 200+ frames.
+- **Cross-chunk relative poses.** Loop closure relative poses are currently derived from the naive-stitched trajectory, which is circular when drift is large. Properly computing independent cross-chunk relative poses (e.g. via SL(4) alignment like VGGT-SLAM) would improve long-sequence performance.
+- **Repetitive textures.** DINOv2 can match frames that look similar but are in different locations (e.g. white walls). The ORB geometric verification catches some of these but not all. A place recognition model trained specifically for loop closure (NetVLAD, CosPlace) would be more robust.
+
+## Future Work
+
+- [ ] Independent cross-chunk relative pose estimation via 3D point cloud alignment in a shared coordinate frame
+- [ ] Learned confidence-to-covariance mapping (train a small network to predict per-frame noise from VGGT's confidence maps)
+- [ ] Integration with VGGT's built-in bundle adjustment for hybrid feed-forward + optimization
+- [ ] Support for other feed-forward models (DUSt3R, MASt3R, Spann3R) as the chunking frontend
+- [ ] Incremental iSAM2 backend for real-time processing
+
+## Related Work
+
+- [VGGT](https://github.com/facebookresearch/vggt) - the feed-forward model we build on top of
+- [VGGT-SLAM](https://arxiv.org/abs/2505.12549) - concurrent work using SL(4) manifold optimization for uncalibrated cameras (code not yet released)
+- [GTSAM](https://github.com/borglab/gtsam) - the factor graph library powering the optimization
+
 ## Requirements
 
 - CUDA GPU with 24GB+ VRAM (for VGGT)
