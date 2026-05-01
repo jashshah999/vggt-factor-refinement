@@ -1,81 +1,81 @@
 # VGGT + Factor Graph Refinement
 
-**Foundation models give you a great initialization. Factor graphs give you global consistency. The combination is better than either alone.**
+**Foundation models give you a great initialization. Factor graphs give you global consistency.**
 
-VGGT predicts camera poses in a single forward pass but has no mechanism for enforcing global geometric constraints. When the camera revisits a location, VGGT doesn't know the start and end should match. There's drift.
+VGGT predicts camera poses from images in a single forward pass, but it can only process ~15-30 frames at once (24GB GPU). For longer videos, you must chunk and stitch. Naive stitching accumulates drift at chunk boundaries.
 
-This project adds a GTSAM factor graph on top of VGGT's output:
-- **Loop closure** corrects trajectory drift when the camera revisits areas
-- **Multi-view consistency** enforces that the same 3D point seen from two views agrees
-- **Uncertainty propagation** gives you covariances on every pose
-- **Incremental processing** via iSAM2 handles videos longer than VGGT's 200-frame limit
+This project adds a GTSAM factor graph on top of VGGT to enforce global consistency across chunks:
+- Within-chunk odometry factors (tight, since VGGT is accurate locally)
+- Cross-chunk overlap constraints
+- Visual loop closure via feature matching
+- LM optimization produces globally consistent trajectory
 
-## Results
+## Results on TUM-RGBD
 
-| Method | ATE (m) on ScanNet | ATE (m) on TUM |
-|--------|-------------------|----------------|
-| VGGT (feed-forward) | - | - |
-| VGGT + Bundle Adjustment | - | - |
-| **VGGT + Factor Graph (ours)** | **-** | **-** |
+**fr1/desk** (80 frames, 13 chunks of 8): **67.8% ATE reduction**
+
+![fr1/desk](assets/tum_fr1_desk.png)
+
+| Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
+|----------|-----------------|------------------|-------------|
+| fr1/desk | 0.2905 m | **0.0934 m** | **67.8%** |
+| fr1/room | 0.1820 m | **0.1691 m** | **7.1%** |
+| fr1/xyz  | 0.1416 m | 0.1415 m | 0.1% |
+
+The factor graph helps most when chunk stitching introduces drift (fr1/desk has many chunk boundary misalignments). On sequences where naive stitching already works well (fr1/xyz has smooth linear motion), the factor graph preserves accuracy without hurting.
+
+## How It Works
+
+```
+Long video (100+ frames)
+    |
+    v
+[Split into chunks of 8-15 frames]
+    |
+    v
+[VGGT per chunk] --> local poses + depth + 3D point maps
+    |
+    v
+[Naive stitch via overlap alignment] --> initial global trajectory
+    |
+    v
+[Build GTSAM factor graph]
+  - Within-chunk odometry (tight noise, VGGT is good locally)
+  - Cross-chunk overlap constraints
+  - Loop closures (ORB feature matching for verification)
+    |
+    v
+[Levenberg-Marquardt optimization] --> refined global trajectory
+```
 
 ## Quick Start
 
 ```bash
+# Install
+pip install gtsam gsplat torch
 pip install -e .
 
-# Run on a video
+# Run on TUM-RGBD
+python benchmark_chunked.py --seq fr1/desk --chunk-size 8 --overlap 2
+
+# Run on your own video
 python run.py --video my_video.mp4 --output output/
-
-# Run on TUM-RGBD benchmark
-python benchmark.py --dataset tum --seq fr1/desk
-
-# Run on ScanNet
-python benchmark.py --dataset scannet --scene scene0000_00
 ```
 
-## Architecture
+## Why Factor Graphs?
 
-```
-Video frames
-    |
-    v
-[VGGT] --> poses (with confidence), depth maps, point maps
-    |
-    v
-[Initialize Gaussians from VGGT point maps]
-[Initialize factor graph with VGGT poses as priors]
-    |
-    v
-[Detect loop closures via feature matching]
-[Add photometric factors between overlapping frames]
-[Add depth consistency factors]
-    |
-    v
-[iSAM2 optimization] --> refined poses with covariances
-    |
-    v
-[Re-render Gaussians with corrected poses]
-    |
-    v
-Output: refined trajectory, 3D Gaussians, confidence per pose
-```
+VGGT is a feed-forward model. It processes each chunk independently with no mechanism to enforce that:
+1. Overlapping frames from different chunks should agree on their 3D positions
+2. The camera trajectory should form a consistent loop when revisiting locations
+3. Chunk boundaries should be smooth (no jumps)
+
+A factor graph provides all three. It takes VGGT's output as initial estimates and soft constraints, then optimizes for global consistency. The factor graph adds ~0.1s of compute on top of VGGT's inference time.
 
 ## Requirements
 
-- CUDA GPU with 24GB+ VRAM
+- CUDA GPU with 24GB+ VRAM (for VGGT)
 - Python 3.10+
-- GTSAM, gsplat, PyTorch
-
-## Citation
-
-```bibtex
-@software{vggt_factor_refinement,
-  author = {Shah, Jash},
-  title = {Factor Graph Refinement of Feed-Forward 3D Reconstruction},
-  year = {2026},
-  url = {https://github.com/jashshah999/vggt-factor-refinement}
-}
-```
+- GTSAM, gsplat, PyTorch, VGGT
 
 ## License
 
