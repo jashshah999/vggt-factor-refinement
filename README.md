@@ -45,6 +45,23 @@ Average improvement: **64.6%** across all 5 TUM sequences.
 
 Average improvement: **78.0%** across 4 Replica scenes.
 
+### Scaling: VGGT Single-Shot vs Chunked + Factor Graph
+
+VGGT single-shot gives the best accuracy but OOMs past ~50 frames on 24GB. Our factor graph pipeline scales to any sequence length while staying close to the single-shot upper bound.
+
+![Scaling](assets/scaling.png)
+
+| Frames | VGGT Single-Shot | Naive Stitch | Factor Graph (ours) |
+|--------|-----------------|-------------|-------------------|
+| 10 | 0.002 m | 0.004 m | 0.003 m |
+| 30 | 0.004 m | 0.016 m | 0.004 m |
+| 50 | 0.005 m | 0.033 m | 0.005 m |
+| 80 | OOM | 0.042 m | **0.015 m** |
+| 200 | OOM | 0.132 m | **0.043 m** |
+| 300 | OOM | 0.190 m | **0.056 m** |
+
+At 300 frames, the factor graph achieves 3.4x lower error than naive stitching, and it keeps scaling.
+
 ### Gaussian Splatting Render Quality
 
 Better poses lead to better 3D reconstruction. Gaussians trained with factor graph poses produce sharper renders:
