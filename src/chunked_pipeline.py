@@ -264,6 +264,13 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
         )
         print(f"    Found {len(appearance_lc)} appearance-based loop closures")
 
+        # Build frame-to-chunk mapping for looking up within-chunk poses
+        frame_to_chunk = {}
+        for c_idx, chunk in enumerate(chunks):
+            for k in range(chunk["end"] - chunk["start"]):
+                global_i = chunk["start"] + k
+                frame_to_chunk[global_i] = (c_idx, k)
+
         # Verify each with geometric matching and add to graph
         n_verified = 0
         for i, j, sim_score in appearance_lc:
@@ -271,12 +278,23 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
             if n_inliers < 30:
                 continue
 
+            # If both frames are in the same chunk, use chunk-internal
+            # relative pose (accurate, no drift)
+            ci, ki_local = frame_to_chunk.get(i, (None, None))
+            cj, kj_local = frame_to_chunk.get(j, (None, None))
+
+            if ci is not None and cj is not None and ci == cj:
+                chunk = chunks[ci]
+                rel = np.linalg.inv(chunk["poses_c2w"][ki_local]) @ chunk["poses_c2w"][kj_local]
+            else:
+                # Different chunks: use the naive-stitched relative pose
+                # (less accurate but the robust kernel handles outliers)
+                rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
+
             ki = gtsam.symbol("x", i)
             kj = gtsam.symbol("x", j)
-            rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
 
-            # Tighter noise for high-similarity pairs
-            sigma = 0.15 if sim_score > 0.8 else 0.25
+            sigma = 0.15 if (ci == cj) else 0.3
             base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
             robust_noise = gtsam.noiseModel.Robust.Create(
                 gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
