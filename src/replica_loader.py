@@ -15,7 +15,7 @@ from pathlib import Path
 
 REPLICA_SCENES = ["room0", "room1", "room2", "office0", "office1", "office2", "office3", "office4"]
 
-REPLICA_URL = "https://cvg.cit.tum.de/rgbd/dataset/nice-slam/Replica.zip"
+REPLICA_URL = "https://cvg-data.inf.ethz.ch/nice-slam/data/Replica.zip"
 
 
 def load_replica_sequence(
