@@ -116,6 +116,9 @@ def _run_vggt_batch(model, images_torch, device):
     poses_c2w = np.linalg.inv(poses_w2c)
     pose_conf = np.median(depth_conf, axis=(1, 2))
 
+    # Extract estimated intrinsics (fx, fy, cx, cy per frame)
+    intrinsics_np = intrinsics[0].float().cpu().numpy()  # (N, 3, 3)
+
     return {
         "poses_c2w": poses_c2w,
         "poses_w2c": poses_w2c,
@@ -124,6 +127,7 @@ def _run_vggt_batch(model, images_torch, device):
         "points": points,
         "point_conf": point_conf,
         "pose_conf": pose_conf,
+        "intrinsics": intrinsics_np,
     }
 
 

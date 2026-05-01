@@ -51,6 +51,16 @@ def run_chunked_pipeline(
             break
         chunk_images = images[start:end]
         chunk_out = run_vggt_on_images(model, chunk_images, device, max_batch=chunk_size)
+
+        # Normalize chunk by mean point cloud depth (VGGT outputs are in
+        # normalized scene coordinates; scale varies between chunks)
+        valid_pts = chunk_out["points"][chunk_out["point_conf"] > 0.3]
+        valid_pts = valid_pts[np.isfinite(valid_pts).all(axis=-1)]
+        if len(valid_pts) > 0:
+            mean_depth = np.mean(np.linalg.norm(valid_pts, axis=-1))
+        else:
+            mean_depth = 1.0
+
         chunks.append({
             "start": start,
             "end": end,
@@ -58,6 +68,7 @@ def run_chunked_pipeline(
             "points": chunk_out["points"],
             "point_conf": chunk_out["point_conf"],
             "pose_conf": chunk_out["pose_conf"],
+            "mean_depth": mean_depth,
         })
         print(f"  Chunk [{start}:{end}] done")
 
@@ -146,17 +157,21 @@ def _naive_stitch(chunks: list, N: int) -> np.ndarray:
         chunk_local_offset = 0  # overlap frames are at the start of the chunk
         curr_overlap_poses = chunk["poses_c2w"][:n_overlap]
 
-        # Compute rigid alignment: T_global = T_align @ T_chunk_local
-        # Using the overlap positions
+        # Compute Sim(3) alignment: handles per-chunk scale ambiguity
         prev_pos = prev_overlap_poses[:, :3, 3]
         curr_pos = curr_overlap_poses[:, :3, 3]
 
-        T_align = _procrustes_rigid(curr_pos, prev_pos)
+        T_align, scale = _procrustes_sim3(curr_pos, prev_pos)
+        R_align = T_align[:3, :3]
+        t_align = T_align[:3, 3]
 
-        # Apply alignment to all chunk poses
+        # Apply Sim(3) to all chunk poses
         for i in range(chunk["end"] - chunk["start"]):
             global_i = chunk["start"] + i
-            aligned = T_align @ chunk["poses_c2w"][i]
+            pose = chunk["poses_c2w"][i].copy()
+            aligned = np.eye(4)
+            aligned[:3, :3] = R_align @ pose[:3, :3]
+            aligned[:3, 3] = scale * R_align @ pose[:3, 3] + t_align
             # For overlap region, average with existing pose
             if global_i < overlap_end:
                 w = (global_i - overlap_start) / max(n_overlap, 1)
@@ -285,21 +300,40 @@ def _naive_stitch_single(chunks, global_i, chunk_pose):
     return None
 
 
-def _procrustes_rigid(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
-    """Rigid alignment (rotation + translation, no scale) from src to dst."""
+def _procrustes_sim3(src: np.ndarray, dst: np.ndarray) -> tuple:
+    """Sim(3) alignment (rotation + translation + scale) from src to dst.
+
+    Returns (T, scale) where T is 4x4 and scale is the uniform scale factor.
+    To transform a point: p_dst = scale * R @ p_src + t
+    To transform a pose:  T_dst[:3,:3] = scale * R @ T_src[:3,:3]
+                          T_dst[:3,3]  = scale * R @ T_src[:3,3] + t
+    """
     src_c = src.mean(axis=0)
     dst_c = dst.mean(axis=0)
-    H = (src - src_c).T @ (dst - dst_c)
-    U, _, Vt = np.linalg.svd(H)
+
+    src_centered = src - src_c
+    dst_centered = dst - dst_c
+
+    # Compute scale (Umeyama)
+    src_var = np.mean(np.sum(src_centered ** 2, axis=1))
+    if src_var < 1e-10:
+        return np.eye(4), 1.0
+
+    H = src_centered.T @ dst_centered / len(src)
+    U, S, Vt = np.linalg.svd(H)
     d = np.linalg.det(Vt.T @ U.T)
     D = np.diag([1, 1, d])
     R = Vt.T @ D @ U.T
-    t = dst_c - R @ src_c
+
+    # Scale: ratio of dst spread to src spread, accounting for rotation
+    scale = np.sum(S * np.diag(D)) / src_var
+
+    t = dst_c - scale * R @ src_c
 
     T = np.eye(4)
     T[:3, :3] = R
     T[:3, 3] = t
-    return T
+    return T, scale
 
 
 def _interpolate_poses(p1: np.ndarray, p2: np.ndarray, w: float) -> np.ndarray:
