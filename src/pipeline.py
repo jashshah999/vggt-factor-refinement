@@ -31,68 +31,23 @@ def run_pipeline(
     Returns:
         dict with poses, metrics, and timing
     """
-    from .vggt_wrapper import load_vggt, run_vggt, vggt_conf_to_covariance
+    from .vggt_wrapper import load_vggt, run_vggt_on_images, vggt_conf_to_covariance
     from .factor_graph import build_factor_graph, detect_loop_closures
     from .gaussian_init import init_gaussians_from_vggt
     from .gaussian_render import train_gaussians as train_gs, render_gaussians
     from .metrics import absolute_trajectory_error, relative_pose_error, psnr
 
     results = {"timings": {}}
+    N = len(images)
 
     # === Step 1: VGGT inference ===
     print("Step 1: Running VGGT...")
     t0 = time.time()
 
-    # Prepare images for VGGT (N, 3, H, W)
-    images_torch = torch.tensor(images, dtype=torch.float32).permute(0, 3, 1, 2)
-
-    # Process in chunks if needed (VGGT memory limit)
-    chunk_size = 30  # ~8GB for 30 frames on L4
-    N = len(images)
-
-    if N <= chunk_size:
-        model = load_vggt(device)
-        vggt_out = run_vggt(model, images_torch, device)
-        del model
-        torch.cuda.empty_cache()
-    else:
-        # Process in overlapping chunks and average overlapping poses
-        model = load_vggt(device)
-        overlap = 5
-        all_poses = np.zeros((N, 4, 4))
-        all_points = np.zeros((N, images.shape[1], images.shape[2], 3))
-        all_depth = np.zeros((N, images.shape[1], images.shape[2]))
-        all_depth_conf = np.zeros((N, images.shape[1], images.shape[2]))
-        all_point_conf = np.zeros((N, images.shape[1], images.shape[2]))
-        counts = np.zeros(N)
-
-        for start in range(0, N, chunk_size - overlap):
-            end = min(start + chunk_size, N)
-            chunk_imgs = images_torch[start:end]
-            chunk_out = run_vggt(model, chunk_imgs, device)
-
-            for local_i, global_i in enumerate(range(start, end)):
-                if counts[global_i] == 0:
-                    all_poses[global_i] = chunk_out["poses_c2w"][local_i]
-                    all_points[global_i] = chunk_out["points"][local_i]
-                    all_depth[global_i] = chunk_out["depth"][local_i]
-                    all_depth_conf[global_i] = chunk_out["depth_conf"][local_i]
-                    all_point_conf[global_i] = chunk_out["point_conf"][local_i]
-                counts[global_i] += 1
-
-            if end >= N:
-                break
-
-        vggt_out = {
-            "poses_c2w": all_poses,
-            "depth": all_depth,
-            "depth_conf": all_depth_conf,
-            "points": all_points,
-            "point_conf": all_point_conf,
-            "pose_conf": np.median(all_depth_conf, axis=(1, 2)),
-        }
-        del model
-        torch.cuda.empty_cache()
+    model = load_vggt(device)
+    vggt_out = run_vggt_on_images(model, images, device, max_batch=15)
+    del model
+    torch.cuda.empty_cache()
 
     results["timings"]["vggt"] = time.time() - t0
     results["vggt_poses"] = vggt_out["poses_c2w"].copy()

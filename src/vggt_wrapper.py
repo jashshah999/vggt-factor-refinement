@@ -2,52 +2,120 @@
 
 import torch
 import numpy as np
-from pathlib import Path
 
 
 def load_vggt(device="cuda"):
-    """Load VGGT model from torch hub."""
-    model = torch.hub.load("facebookresearch/vggt", "vggt", pretrained=True)
+    """Load VGGT model from HuggingFace."""
+    from vggt.models.vggt import VGGT
+    model = VGGT.from_pretrained("facebook/VGGT-1B")
     model = model.to(device).eval()
     return model
 
 
-def run_vggt(model, images: torch.Tensor, device="cuda"):
-    """Run VGGT on a batch of images.
+def run_vggt_on_images(model, images_np: np.ndarray, device="cuda", max_batch: int = 15):
+    """Run VGGT on numpy images.
 
     Args:
         model: VGGT model
-        images: (N, 3, H, W) tensor, values in [0, 1]
+        images_np: (N, H, W, 3) numpy array, values in [0, 1]
+        device: cuda or cpu
+        max_batch: max frames per VGGT forward pass (memory limited)
 
     Returns:
-        dict with keys: extrinsics (N, 3, 4), depth (N, H, W),
-        points (N, H, W, 3), depth_conf (N, H, W), pose_conf (N,)
+        dict with poses_c2w (N,4,4), depth, depth_conf, points, point_conf, pose_conf
     """
-    with torch.no_grad(), torch.cuda.amp.autocast(dtype=torch.bfloat16):
-        images = images.to(device)
-        predictions = model(images.unsqueeze(0))
+    import cv2
 
-    extrinsics = predictions["extrinsic"][0].float().cpu().numpy()
-    depth = predictions["depth"][0].float().cpu().numpy()
-    depth_conf = predictions["depth_confidence"][0].float().cpu().numpy()
-    points = predictions["world_points"][0].float().cpu().numpy()
-    point_conf = predictions["world_points_confidence"][0].float().cpu().numpy()
+    N, H, W, _ = images_np.shape
 
-    # Convert extrinsics (3x4) to 4x4
-    N = extrinsics.shape[0]
-    poses = np.zeros((N, 4, 4), dtype=np.float64)
-    poses[:, :3, :] = extrinsics
-    poses[:, 3, 3] = 1.0
+    # VGGT expects (B, N, 3, H, W) with images resized to fit model
+    # Resize to 336 on the shorter side, keeping aspect ratio
+    target_size = 336
+    if H < W:
+        new_H = target_size
+        new_W = int(W * target_size / H)
+    else:
+        new_W = target_size
+        new_H = int(H * target_size / W)
+    # Make divisible by 14 (ViT patch size)
+    new_H = (new_H // 14) * 14
+    new_W = (new_W // 14) * 14
 
-    # Invert to get camera-to-world (VGGT gives world-to-camera)
-    c2w = np.linalg.inv(poses)
+    resized = np.stack([cv2.resize(img, (new_W, new_H)) for img in images_np])
+    images_torch = torch.tensor(resized, dtype=torch.float32).permute(0, 3, 1, 2)
 
-    # Aggregate confidence per frame
+    if N <= max_batch:
+        return _run_vggt_batch(model, images_torch, device)
+
+    # Process in overlapping chunks
+    overlap = 3
+    all_poses = [None] * N
+    all_depth = [None] * N
+    all_depth_conf = [None] * N
+    all_points = [None] * N
+    all_point_conf = [None] * N
+
+    for start in range(0, N, max_batch - overlap):
+        end = min(start + max_batch, N)
+        chunk = images_torch[start:end]
+        out = _run_vggt_batch(model, chunk, device)
+
+        for local_i, global_i in enumerate(range(start, end)):
+            if all_poses[global_i] is None:
+                all_poses[global_i] = out["poses_c2w"][local_i]
+                all_depth[global_i] = out["depth"][local_i]
+                all_depth_conf[global_i] = out["depth_conf"][local_i]
+                all_points[global_i] = out["points"][local_i]
+                all_point_conf[global_i] = out["point_conf"][local_i]
+
+        if end >= N:
+            break
+
+    pose_conf = np.array([np.median(dc) for dc in all_depth_conf])
+
+    return {
+        "poses_c2w": np.array(all_poses),
+        "depth": np.array(all_depth),
+        "depth_conf": np.array(all_depth_conf),
+        "points": np.array(all_points),
+        "point_conf": np.array(all_point_conf),
+        "pose_conf": pose_conf,
+    }
+
+
+def _run_vggt_batch(model, images_torch, device):
+    """Run VGGT on a single batch of images."""
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        images_batch = images_torch.unsqueeze(0).to(device)
+        predictions = model(images_batch)
+
+    # Extract predictions
+    N = images_torch.shape[0]
+
+    # VGGT outputs extrinsics as world-to-camera
+    # We also need the pose_enc for camera intrinsics
+    # Get extrinsics from pose_enc
+    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    pose_enc = predictions["pose_enc"]
+    extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc)
+    extrinsics = extrinsics[0].float().cpu().numpy()  # (N, 3, 4)
+
+    depth = predictions["depth"][0].float().cpu().numpy()  # (N, H, W)
+    depth_conf = predictions["depth_conf"][0].float().cpu().numpy()
+    points = predictions["world_points"][0].float().cpu().numpy()  # (N, H, W, 3)
+    point_conf = predictions["world_points_conf"][0].float().cpu().numpy()
+
+    # Convert 3x4 extrinsics to 4x4 and invert to get camera-to-world
+    poses_w2c = np.zeros((N, 4, 4), dtype=np.float64)
+    poses_w2c[:, :3, :] = extrinsics
+    poses_w2c[:, 3, 3] = 1.0
+
+    poses_c2w = np.linalg.inv(poses_w2c)
     pose_conf = np.median(depth_conf, axis=(1, 2))
 
     return {
-        "poses_c2w": c2w,
-        "poses_w2c": poses,
+        "poses_c2w": poses_c2w,
+        "poses_w2c": poses_w2c,
         "depth": depth,
         "depth_conf": depth_conf,
         "points": points,
@@ -62,9 +130,6 @@ def vggt_conf_to_covariance(pose_conf: np.ndarray, base_sigma: float = 0.1) -> n
     Higher confidence -> smaller covariance (more certain).
     Returns array of shape (N, 6) with diagonal covariance entries.
     """
-    # Clamp confidence to avoid division by zero
     conf = np.clip(pose_conf, 0.01, 1.0)
-    # Inverse relationship: low confidence = high uncertainty
     sigma = base_sigma / conf
-    # 6-DOF: (rx, ry, rz, tx, ty, tz)
     return np.stack([sigma] * 6, axis=-1)
