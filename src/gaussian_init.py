@@ -28,15 +28,20 @@ def init_gaussians_from_vggt(
     Returns:
         dict with means, colors, scales, opacities, quats as torch Parameters
     """
+    import cv2
+
     all_means = []
     all_colors = []
 
-    N, H, W, _ = points.shape
+    N, H_pts, W_pts, _ = points.shape
 
     for i in range(N):
         pts = points[i, ::stride, ::stride]  # (H', W', 3)
-        cols = images[i, ::stride, ::stride]  # (H', W', 3)
         conf = point_conf[i, ::stride, ::stride]  # (H', W')
+
+        # Resize image to match point map resolution before striding
+        img_resized = cv2.resize(images[i], (W_pts, H_pts))
+        cols = img_resized[::stride, ::stride]
 
         mask = conf > conf_threshold
         mask &= np.isfinite(pts).all(axis=-1)

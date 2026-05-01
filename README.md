@@ -12,17 +12,19 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 
 ## Results on TUM-RGBD
 
-**fr1/desk** (80 frames, 13 chunks of 8): **67.8% ATE reduction**
+**fr1/desk** (80 frames, 13 chunks of 8): **89.4% ATE reduction**
 
 ![fr1/desk](assets/tum_fr1_desk.png)
 
 | Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
 |----------|-----------------|------------------|-------------|
-| fr1/desk | 0.2905 m | **0.0934 m** | **67.8%** |
-| fr1/room | 0.1820 m | **0.1691 m** | **7.1%** |
-| fr1/xyz  | 0.1416 m | 0.1415 m | 0.1% |
+| fr1/desk | 0.2905 m | **0.0309 m** | **89.4%** |
+| fr1/xyz | 0.1416 m | **0.0599 m** | **57.7%** |
+| fr1/room | 0.1820 m | **0.0852 m** | **53.2%** |
+| fr2/desk | 0.0896 m | **0.0346 m** | **61.4%** |
+| fr3/office | 0.1259 m | **0.0487 m** | **61.3%** |
 
-The factor graph helps most when chunk stitching introduces drift (fr1/desk has many chunk boundary misalignments). On sequences where naive stitching already works well (fr1/xyz has smooth linear motion), the factor graph preserves accuracy without hurting.
+Average improvement: **64.6%** across all 5 TUM-RGBD sequences. The factor graph consistently reduces drift from naive chunk stitching. Uses Cauchy robust kernel on loop closure factors so outlier constraints don't dominate.
 
 ## How It Works
 

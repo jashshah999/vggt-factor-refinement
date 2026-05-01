@@ -110,14 +110,21 @@ def run_pipeline(
         t0 = time.time()
         gs_params_vggt = {k: torch.nn.Parameter(v.data.clone()) for k, v in gs_params.items()}
 
-        # Resize images for rendering if needed
+        # Use VGGT-resolution images for rendering (must match depth/point map size)
         import cv2
-        render_H, render_W = H, W
-        render_images = images
+        pts_H, pts_W = vggt_out["depth"].shape[1], vggt_out["depth"].shape[2]
+        render_H, render_W = pts_H, pts_W
+        render_images = np.stack([cv2.resize(img, (pts_W, pts_H)) for img in images])
+        # Adjust intrinsics for the resized resolution
+        scale_x = pts_W / W
+        scale_y = pts_H / H
+        K_render = K.copy()
+        K_render[0, :] *= scale_x
+        K_render[1, :] *= scale_y
 
         vggt_loss = train_gs(
             gs_params_vggt, vggt_out["poses_c2w"], render_images,
-            K, render_W, render_H, n_iters=n_train_iters, device=device,
+            K_render, render_W, render_H, n_iters=n_train_iters, device=device,
         )
         results["timings"]["gaussian_train_vggt"] = time.time() - t0
         results["vggt_render_loss"] = vggt_loss
@@ -125,10 +132,10 @@ def run_pipeline(
         # Render a sample for comparison
         mid = N // 2
         vggt_render = render_gaussians(
-            gs_params_vggt, vggt_out["poses_c2w"][mid], K, render_W, render_H, device
+            gs_params_vggt, vggt_out["poses_c2w"][mid], K_render, render_W, render_H, device
         )
         results["vggt_render"] = vggt_render
-        results["vggt_render_psnr"] = psnr(images[mid], vggt_render)
+        results["vggt_render_psnr"] = psnr(render_images[mid], vggt_render)
         print(f"  VGGT render PSNR: {results['vggt_render_psnr']:.2f} dB")
 
         # === Step 4b: Train Gaussians with refined poses ===
@@ -139,16 +146,16 @@ def run_pipeline(
 
             fg_loss = train_gs(
                 gs_params_fg, refined_poses, render_images,
-                K, render_W, render_H, n_iters=n_train_iters, device=device,
+                K_render, render_W, render_H, n_iters=n_train_iters, device=device,
             )
             results["timings"]["gaussian_train_fg"] = time.time() - t0
             results["fg_render_loss"] = fg_loss
 
             fg_render = render_gaussians(
-                gs_params_fg, refined_poses[mid], K, render_W, render_H, device
+                gs_params_fg, refined_poses[mid], K_render, render_W, render_H, device
             )
             results["fg_render"] = fg_render
-            results["fg_render_psnr"] = psnr(images[mid], fg_render)
+            results["fg_render_psnr"] = psnr(render_images[mid], fg_render)
             print(f"  Refined render PSNR: {results['fg_render_psnr']:.2f} dB")
 
     return results
