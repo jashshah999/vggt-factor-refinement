@@ -40,8 +40,8 @@ def build_factor_graph(
     N = len(poses_c2w)
 
     isam_params = gtsam.ISAM2Params()
-    isam_params.setRelinearizeThreshold(0.01)
-    isam_params.setRelinearizeSkip(1)
+    isam_params.relinearizeThreshold = 0.01
+    isam_params.relinearizeSkip = 1
     isam = gtsam.ISAM2(isam_params)
 
     # Add all poses incrementally
