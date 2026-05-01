@@ -264,47 +264,57 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
         )
         print(f"    Found {len(appearance_lc)} appearance-based loop closures")
 
-        # Build frame-to-chunk mapping for looking up within-chunk poses
+        # Build frame-to-chunk mapping for looking up within-chunk poses/points
         frame_to_chunk = {}
         for c_idx, chunk in enumerate(chunks):
             for k in range(chunk["end"] - chunk["start"]):
                 global_i = chunk["start"] + k
                 frame_to_chunk[global_i] = (c_idx, k)
 
-        # Verify each with geometric matching and add to graph
-        n_verified = 0
-        for i, j, sim_score in appearance_lc:
-            n_inliers = _count_match_inliers(images[i], images[j])
-            if n_inliers < 30:
-                continue
+        from .cross_chunk_align import estimate_cross_chunk_relative_pose
 
-            # If both frames are in the same chunk, use chunk-internal
-            # relative pose (accurate, no drift)
+        n_verified = 0
+        n_cross_chunk = 0
+        for i, j, sim_score in appearance_lc:
             ci, ki_local = frame_to_chunk.get(i, (None, None))
             cj, kj_local = frame_to_chunk.get(j, (None, None))
 
-            if ci is not None and cj is not None and ci == cj:
+            if ci is None or cj is None:
+                continue
+
+            if ci == cj:
+                # Same chunk: use chunk-internal relative pose (accurate)
                 chunk = chunks[ci]
                 rel = np.linalg.inv(chunk["poses_c2w"][ki_local]) @ chunk["poses_c2w"][kj_local]
+                sigma = 0.15
             else:
-                # Different chunks: use the naive-stitched relative pose
-                # (less accurate but the robust kernel handles outliers)
-                rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
+                # Different chunks: estimate relative pose from 3D point matching
+                chunk_i = chunks[ci]
+                chunk_j = chunks[cj]
+                rel, n_3d_inliers = estimate_cross_chunk_relative_pose(
+                    images[i], images[j],
+                    chunk_i["points"][ki_local], chunk_j["points"][kj_local],
+                    chunk_i["point_conf"][ki_local], chunk_j["point_conf"][kj_local],
+                    chunk_i["poses_c2w"][ki_local], chunk_j["poses_c2w"][kj_local],
+                    min_matches=15,
+                )
+                if rel is None:
+                    continue
+                sigma = 0.2
+                n_cross_chunk += 1
 
-            ki = gtsam.symbol("x", i)
-            kj = gtsam.symbol("x", j)
-
-            sigma = 0.15 if (ci == cj) else 0.3
+            key_i = gtsam.symbol("x", i)
+            key_j = gtsam.symbol("x", j)
             base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
             robust_noise = gtsam.noiseModel.Robust.Create(
                 gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
             )
             graph.add(gtsam.BetweenFactorPose3(
-                ki, kj, _mat_to_pose3(rel), robust_noise
+                key_i, key_j, _mat_to_pose3(rel), robust_noise
             ))
             n_verified += 1
 
-        print(f"    {n_verified} verified loop closures added to graph")
+        print(f"    {n_verified} loop closures added ({n_cross_chunk} cross-chunk with 3D alignment)")
 
     # Optimize with Levenberg-Marquardt
     params = gtsam.LevenbergMarquardtParams()
