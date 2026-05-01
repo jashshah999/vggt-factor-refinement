@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "vggt-factor-refinement"
+version = "0.1.0"
+description = "Factor graph refinement of VGGT feed-forward 3D reconstruction"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "numpy",
+    "opencv-python-headless",
+    "tqdm",
+    "matplotlib",
+    "scipy",
+]
+
+[tool.ruff]
+line-length = 100
