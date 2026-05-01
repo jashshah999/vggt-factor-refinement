@@ -335,14 +335,13 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
     lc_graph = gtsam.NonlinearFactorGraph()
     for k in range(graph.size()):
         factor = graph.at(k)
-        # Prior factors and between factors with keys close together are odometry
-        if factor.keys().size() == 1:
+        keys = factor.keys()
+        n_keys = len(keys)
+        if n_keys == 1:
             odom_graph.add(factor)
-        elif factor.keys().size() == 2:
-            key0 = factor.keys().at(0)
-            key1 = factor.keys().at(1)
-            idx0 = gtsam.Symbol(key0).index()
-            idx1 = gtsam.Symbol(key1).index()
+        elif n_keys == 2:
+            idx0 = gtsam.Symbol(keys[0]).index()
+            idx1 = gtsam.Symbol(keys[1]).index()
             if abs(int(idx0) - int(idx1)) <= 2:
                 odom_graph.add(factor)
             else:
