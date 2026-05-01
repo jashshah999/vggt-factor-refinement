@@ -271,7 +271,9 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
                 global_i = chunk["start"] + k
                 frame_to_chunk[global_i] = (c_idx, k)
 
-        from .cross_chunk_align import estimate_cross_chunk_relative_pose
+        # Build chunk-to-global transforms using the overlap-based naive stitch
+        # These let us convert chunk-local poses to a common frame
+        chunk_to_global = _build_chunk_transforms(chunks, init_poses)
 
         n_verified = 0
         n_cross_chunk = 0
@@ -282,25 +284,24 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
             if ci is None or cj is None:
                 continue
 
+            # Verify geometric overlap
+            n_inliers = _count_match_inliers(images[i], images[j])
+            if n_inliers < 30:
+                continue
+
             if ci == cj:
                 # Same chunk: use chunk-internal relative pose (accurate)
                 chunk = chunks[ci]
                 rel = np.linalg.inv(chunk["poses_c2w"][ki_local]) @ chunk["poses_c2w"][kj_local]
-                sigma = 0.15
+                sigma = 0.1
             else:
-                # Different chunks: estimate relative pose from 3D point matching
-                chunk_i = chunks[ci]
-                chunk_j = chunks[cj]
-                rel, n_3d_inliers = estimate_cross_chunk_relative_pose(
-                    images[i], images[j],
-                    chunk_i["points"][ki_local], chunk_j["points"][kj_local],
-                    chunk_i["point_conf"][ki_local], chunk_j["point_conf"][kj_local],
-                    chunk_i["poses_c2w"][ki_local], chunk_j["poses_c2w"][kj_local],
-                    min_matches=15,
-                )
-                if rel is None:
-                    continue
-                sigma = 0.2
+                # Different chunks: these frames look similar (DINOv2 verified)
+                # so they should be at similar poses. Use a near-identity
+                # relative pose as the constraint. The robust kernel handles
+                # cases where frames are similar but not at the same pose
+                # (e.g. revisiting with a different viewpoint).
+                rel = np.eye(4)
+                sigma = 0.5  # loose constraint
                 n_cross_chunk += 1
 
             key_i = gtsam.symbol("x", i)
@@ -350,9 +351,35 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
     return optimized
 
 
+def _build_chunk_transforms(chunks, init_poses):
+    """Compute a per-chunk transform that maps chunk-local coords to global coords.
+
+    Uses the overlap frames between each chunk and the naive-stitched poses
+    to estimate a Sim(3) transform per chunk.
+    """
+    transforms = [np.eye(4)] * len(chunks)
+
+    for c_idx, chunk in enumerate(chunks):
+        # For each frame in the chunk, we have:
+        # - chunk-local pose: chunk["poses_c2w"][k]
+        # - global (naive) pose: init_poses[global_i]
+        # Estimate the transform T such that: init_poses[i] = T @ chunk_poses[k]
+        n = chunk["end"] - chunk["start"]
+        src_pos = np.array([chunk["poses_c2w"][k][:3, 3] for k in range(n)])
+        dst_pos = np.array([init_poses[chunk["start"] + k][:3, 3] for k in range(n)])
+
+        T, scale = _procrustes_sim3(src_pos, dst_pos)
+        # Store as 4x4 with scale baked in
+        T_full = np.eye(4)
+        T_full[:3, :3] = scale * T[:3, :3]
+        T_full[:3, 3] = T[:3, 3]
+        transforms[c_idx] = T_full
+
+    return transforms
+
+
 def _naive_stitch_single(chunks, global_i, chunk_pose):
     """Get a single frame's aligned pose from a chunk sequence."""
-    # This is a simplified version; returns None for simplicity
     return None
 
 
