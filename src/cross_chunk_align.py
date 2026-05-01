@@ -80,21 +80,30 @@ def estimate_cross_chunk_relative_pose(
     pts3d_i = np.array(pts3d_i)
     pts3d_j = np.array(pts3d_j)
 
+    # Estimate inlier threshold from the point cloud scale
+    scene_scale = max(np.std(pts3d_i), np.std(pts3d_j))
+    inlier_thresh = max(scene_scale * 0.02, 0.005)  # 2% of scene scale
+
     # RANSAC Procrustes: find the best Sim(3) alignment
-    best_T, best_scale, best_inliers = _ransac_procrustes(pts3d_i, pts3d_j)
+    best_T, best_scale, best_inliers = _ransac_procrustes(
+        pts3d_i, pts3d_j, inlier_thresh=inlier_thresh,
+    )
     if best_inliers < min_matches:
         return None, 0
 
-    # The Procrustes gives us: p_j = scale * R @ p_i + t
-    # Both point maps are in world coordinates of their respective chunks.
-    # The relative pose between the two camera frames is:
-    # T_j_from_i = T_j_in_chunkB^{-1} @ Sim3 @ T_i_in_chunkA
-    # But since we're working with world points (not camera-frame points),
-    # the Sim3 transform IS the chunk-to-chunk alignment.
-    # So the relative pose between frames is:
-    # T_rel = inv(pose_j) @ Sim3_transform @ pose_i (in respective chunk coords)
+    # Sanity check: scale should be reasonable (0.5 to 2.0)
+    if best_scale < 0.3 or best_scale > 3.0:
+        return None, 0
 
-    # Build the Sim3 as a 4x4 (applying scale to translation)
+    # Sanity check: rotation should be small for nearby frames
+    angle = np.arccos(np.clip((np.trace(best_T[:3, :3]) - 1) / 2, -1, 1))
+    if np.degrees(angle) > 45:
+        return None, 0
+
+    # The Procrustes gives: p_j = scale * R @ p_i + t
+    # This is the world-to-world transform between chunks.
+    # The relative camera pose is:
+    # T_rel = inv(pose_j) @ Sim3 @ pose_i
     sim3 = np.eye(4)
     sim3[:3, :3] = best_scale * best_T[:3, :3]
     sim3[:3, 3] = best_T[:3, 3]
@@ -136,7 +145,7 @@ def _match_frames(img_i, img_j):
     return pts_i[mask], pts_j[mask], int(mask.sum())
 
 
-def _ransac_procrustes(src, dst, n_iters=200, inlier_thresh=0.1):
+def _ransac_procrustes(src, dst, n_iters=200, inlier_thresh=0.01):
     """RANSAC Sim(3) alignment from src to dst point sets.
 
     Returns (T_4x4, scale, n_inliers).
