@@ -32,7 +32,18 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 | fr2/desk | 0.0896 m | **0.0346 m** | **61.4%** |
 | fr3/office | 0.1259 m | **0.0487 m** | **61.3%** |
 
-Average improvement: **64.6%** across all 5 sequences.
+Average improvement: **64.6%** across all 5 TUM sequences.
+
+### Replica Dataset (80 frames, chunk_size=8)
+
+| Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
+|----------|-----------------|------------------|-------------|
+| office0 | 0.4845 m | **0.1043 m** | **78.5%** |
+| office1 | 0.2163 m | **0.0675 m** | **68.8%** |
+| room0 | 0.5231 m | **0.0819 m** | **84.3%** |
+| room1 | 0.3968 m | **0.0782 m** | **80.3%** |
+
+Average improvement: **78.0%** across 4 Replica scenes.
 
 ### Gaussian Splatting Render Quality
 
