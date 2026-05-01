@@ -10,6 +10,12 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 - Visual loop closure via ORB feature matching
 - LM optimization produces globally consistent trajectory
 
+## Demo
+
+Animated trajectory comparison on TUM fr1/room (80 frames, 12 chunks). Red = naive overlap stitching. Blue = factor graph. The factor graph produces a smoother, more accurate trajectory.
+
+![demo](assets/demo.gif)
+
 ## Results
 
 ### Pose Accuracy (TUM-RGBD, 80 frames, chunk_size=8)
