@@ -10,6 +10,12 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 - Visual loop closure via ORB feature matching
 - LM optimization produces globally consistent trajectory
 
+## Demo
+
+3D point cloud with camera frustums on TUM fr1/desk. Green = ground truth, blue = factor graph (ours), red = naive stitching. The factor graph trajectory closely follows ground truth while naive stitching drifts.
+
+![3D visualization](assets/orbit.gif)
+
 ## Results
 
 ### Pose Accuracy (TUM-RGBD, 80 frames, chunk_size=8)
