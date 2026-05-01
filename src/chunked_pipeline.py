@@ -295,23 +295,30 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
                 rel = np.linalg.inv(chunk["poses_c2w"][ki_local]) @ chunk["poses_c2w"][kj_local]
                 sigma = 0.1
             else:
-                # Different chunks: these frames look similar (DINOv2 verified)
-                # so they should be at similar poses. Use a near-identity
-                # relative pose as the constraint. The robust kernel handles
-                # cases where frames are similar but not at the same pose
-                # (e.g. revisiting with a different viewpoint).
+                # Different chunks: visually similar frames should have
+                # similar poses. Use identity as the relative pose with
+                # tight noise and NO robust kernel so the constraint has
+                # real pull even when the initial estimate is far off.
                 rel = np.eye(4)
-                sigma = 0.5  # loose constraint
                 n_cross_chunk += 1
 
             key_i = gtsam.symbol("x", i)
             key_j = gtsam.symbol("x", j)
-            base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
-            robust_noise = gtsam.noiseModel.Robust.Create(
-                gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
-            )
+
+            if ci == cj:
+                # Same-chunk: use robust noise
+                base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
+                noise = gtsam.noiseModel.Robust.Create(
+                    gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
+                )
+            else:
+                # Cross-chunk: use tight Gaussian (no robust) weighted by
+                # visual similarity. Higher similarity = tighter constraint.
+                lc_sigma = 0.1 if sim_score > 0.8 else 0.2
+                noise = gtsam.noiseModel.Isotropic.Sigma(6, lc_sigma)
+
             graph.add(gtsam.BetweenFactorPose3(
-                key_i, key_j, _mat_to_pose3(rel), robust_noise
+                key_i, key_j, _mat_to_pose3(rel), noise
             ))
             n_verified += 1
 
