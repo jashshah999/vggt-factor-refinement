@@ -26,24 +26,22 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 
 | Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
 |----------|-----------------|------------------|-------------|
-| fr1/desk | 0.2905 m | **0.0309 m** | **89.4%** |
-| fr1/xyz | 0.1416 m | **0.0599 m** | **57.7%** |
-| fr1/room | 0.1820 m | **0.0852 m** | **53.2%** |
-| fr2/desk | 0.0896 m | **0.0346 m** | **61.4%** |
-| fr3/office | 0.1259 m | **0.0487 m** | **61.3%** |
-
-Average improvement: **64.6%** across all 5 TUM sequences.
+| fr1/desk | 0.187 m | **0.031 m** | **83.5%** |
+| fr1/xyz | 0.176 m | **0.060 m** | **66.1%** |
+| fr1/room | 0.134 m | **0.085 m** | **36.4%** |
+| fr2/desk | 0.127 m | **0.021 m** | **83.6%** |
+| fr3/office | 0.105 m | **0.049 m** | **53.7%** |
 
 ### Replica Dataset (80 frames, chunk_size=8)
 
 | Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
 |----------|-----------------|------------------|-------------|
-| office0 | 0.4845 m | **0.1043 m** | **78.5%** |
-| office1 | 0.2163 m | **0.0675 m** | **68.8%** |
-| room0 | 0.5231 m | **0.0819 m** | **84.3%** |
-| room1 | 0.3968 m | **0.0782 m** | **80.3%** |
+| office0 | 0.410 m | **0.104 m** | **74.6%** |
+| office1 | 0.208 m | **0.068 m** | **67.3%** |
+| room0 | 0.511 m | **0.082 m** | **84.0%** |
+| room1 | 0.463 m | **0.078 m** | **83.1%** |
 
-Average improvement: **78.0%** across 4 Replica scenes.
+Average improvement: **70.3%** across 9 sequences on 2 datasets.
 
 ### Scaling: VGGT Single-Shot vs Chunked + Factor Graph
 
