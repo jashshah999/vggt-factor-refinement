@@ -66,7 +66,8 @@ def run_pipeline(
 
         pose_sigmas = vggt_conf_to_covariance(vggt_out["pose_conf"])
         loop_closures = detect_loop_closures(
-            vggt_out["poses_c2w"], distance_threshold=0.5, min_frame_gap=20
+            vggt_out["poses_c2w"], images=images,
+            distance_threshold=1.0, min_frame_gap=20,
         )
         print(f"  Detected {len(loop_closures)} loop closures")
 

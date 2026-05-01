@@ -105,31 +105,104 @@ def build_factor_graph(
 
 def detect_loop_closures(
     poses_c2w: np.ndarray,
-    distance_threshold: float = 0.5,
-    min_frame_gap: int = 30,
+    images: np.ndarray = None,
+    distance_threshold: float = 1.0,
+    min_frame_gap: int = 20,
 ) -> list:
-    """Detect loop closures based on spatial proximity.
+    """Detect loop closures based on spatial proximity and visual verification.
+
+    If images are provided, uses feature matching to compute more accurate
+    relative poses between loop closure candidates (instead of using the
+    potentially drifted VGGT poses).
 
     Returns list of (i, j, relative_pose_matrix) tuples.
     """
     N = len(poses_c2w)
     positions = poses_c2w[:, :3, 3]
-    closures = []
+    candidates = []
 
     for i in range(N):
         for j in range(i + min_frame_gap, N):
             dist = np.linalg.norm(positions[i] - positions[j])
             if dist < distance_threshold:
-                # Relative pose from i to j
-                T_i = poses_c2w[i]
-                T_j = poses_c2w[j]
-                rel = np.linalg.inv(T_i) @ T_j
-                closures.append((i, j, rel))
+                candidates.append((i, j))
 
-    # Deduplicate: keep at most one closure per (i, j) region
+    if not candidates:
+        return []
+
+    # Limit candidates
+    if len(candidates) > 100:
+        indices = np.linspace(0, len(candidates) - 1, 100, dtype=int)
+        candidates = [candidates[k] for k in indices]
+
+    closures = []
+    for i, j in candidates:
+        if images is not None:
+            # Compute relative pose from feature matching
+            rel = _match_relative_pose(images[i], images[j])
+            if rel is not None:
+                closures.append((i, j, rel))
+        else:
+            # Fallback to VGGT poses
+            rel = np.linalg.inv(poses_c2w[i]) @ poses_c2w[j]
+            closures.append((i, j, rel))
+
+    # Keep at most 50
     if len(closures) > 50:
-        # Sample uniformly to avoid overwhelming the graph
         indices = np.linspace(0, len(closures) - 1, 50, dtype=int)
         closures = [closures[k] for k in indices]
 
     return closures
+
+
+def _match_relative_pose(img1: np.ndarray, img2: np.ndarray) -> np.ndarray:
+    """Estimate relative pose between two images using ORB + essential matrix.
+
+    Returns 4x4 relative pose matrix, or None if matching fails.
+    """
+    import cv2
+
+    # Convert to uint8 gray
+    gray1 = (img1 * 255).astype(np.uint8)
+    gray2 = (img2 * 255).astype(np.uint8)
+    if gray1.ndim == 3:
+        gray1 = cv2.cvtColor(gray1, cv2.COLOR_RGB2GRAY)
+        gray2 = cv2.cvtColor(gray2, cv2.COLOR_RGB2GRAY)
+
+    # ORB features
+    orb = cv2.ORB_create(1000)
+    kp1, des1 = orb.detectAndCompute(gray1, None)
+    kp2, des2 = orb.detectAndCompute(gray2, None)
+
+    if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
+        return None
+
+    # BF matching
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+    matches = sorted(matches, key=lambda m: m.distance)
+
+    if len(matches) < 20:
+        return None
+
+    pts1 = np.float32([kp1[m.queryIdx].pt for m in matches])
+    pts2 = np.float32([kp2[m.trainIdx].pt for m in matches])
+
+    # Estimate essential matrix (assume rough intrinsics)
+    h, w = gray1.shape
+    focal = max(h, w)
+    pp = (w / 2, h / 2)
+    E, mask = cv2.findEssentialMat(pts1, pts2, focal, pp, cv2.RANSAC, 0.999, 1.0)
+    if E is None:
+        return None
+
+    inliers = mask.ravel().sum()
+    if inliers < 15:
+        return None
+
+    _, R, t, _ = cv2.recoverPose(E, pts1, pts2, focal=focal, pp=pp, mask=mask)
+
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = t.ravel()
+    return T
