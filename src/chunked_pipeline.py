@@ -271,10 +271,6 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
                 global_i = chunk["start"] + k
                 frame_to_chunk[global_i] = (c_idx, k)
 
-        # Build chunk-to-global transforms using the overlap-based naive stitch
-        # These let us convert chunk-local poses to a common frame
-        chunk_to_global = _build_chunk_transforms(chunks, init_poses)
-
         n_verified = 0
         n_cross_chunk = 0
         for i, j, sim_score in appearance_lc:
@@ -284,81 +280,37 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
             if ci is None or cj is None:
                 continue
 
-            # Verify geometric overlap
             n_inliers = _count_match_inliers(images[i], images[j])
             if n_inliers < 30:
                 continue
 
             if ci == cj:
-                # Same chunk: use chunk-internal relative pose (accurate)
                 chunk = chunks[ci]
                 rel = np.linalg.inv(chunk["poses_c2w"][ki_local]) @ chunk["poses_c2w"][kj_local]
                 sigma = 0.1
             else:
-                # Different chunks: visually similar frames should have
-                # similar poses. Use identity as the relative pose with
-                # tight noise and NO robust kernel so the constraint has
-                # real pull even when the initial estimate is far off.
-                rel = np.eye(4)
+                rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
+                sigma = 0.2
                 n_cross_chunk += 1
 
             key_i = gtsam.symbol("x", i)
             key_j = gtsam.symbol("x", j)
-
-            if ci == cj:
-                # Same-chunk: use robust noise
-                base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
-                noise = gtsam.noiseModel.Robust.Create(
-                    gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
-                )
-            else:
-                # Cross-chunk: use tight Gaussian (no robust) weighted by
-                # visual similarity. Higher similarity = tighter constraint.
-                lc_sigma = 0.1 if sim_score > 0.8 else 0.2
-                noise = gtsam.noiseModel.Isotropic.Sigma(6, lc_sigma)
-
+            base_noise = gtsam.noiseModel.Isotropic.Sigma(6, sigma)
+            robust_noise = gtsam.noiseModel.Robust.Create(
+                gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
+            )
             graph.add(gtsam.BetweenFactorPose3(
-                key_i, key_j, _mat_to_pose3(rel), noise
+                key_i, key_j, _mat_to_pose3(rel), robust_noise
             ))
             n_verified += 1
 
         print(f"    {n_verified} loop closures added ({n_cross_chunk} cross-chunk with 3D alignment)")
 
-    print(f"    Graph has {graph.size()} factors, {values.size()} variables")
-
-    # Use iSAM2 for incremental optimization which handles large corrections
-    # better than batch LM on a graph with conflicting constraints
-    isam = gtsam.ISAM2(gtsam.ISAM2Params())
-
-    # Add factors in batches: first odometry, then loop closures
-    odom_graph = gtsam.NonlinearFactorGraph()
-    lc_graph = gtsam.NonlinearFactorGraph()
-    for k in range(graph.size()):
-        factor = graph.at(k)
-        keys = factor.keys()
-        n_keys = len(keys)
-        if n_keys == 1:
-            odom_graph.add(factor)
-        elif n_keys == 2:
-            idx0 = gtsam.Symbol(keys[0]).index()
-            idx1 = gtsam.Symbol(keys[1]).index()
-            if abs(int(idx0) - int(idx1)) <= 2:
-                odom_graph.add(factor)
-            else:
-                lc_graph.add(factor)
-
-    # Phase 1: optimize with odometry only
-    isam.update(odom_graph, values)
-    for _ in range(3):
-        isam.update()
-
-    # Phase 2: add loop closures incrementally
-    if lc_graph.size() > 0:
-        isam.update(lc_graph, gtsam.Values())
-        for _ in range(10):
-            isam.update()
-
-    result = isam.calculateEstimate()
+    params = gtsam.LevenbergMarquardtParams()
+    params.setMaxIterations(100)
+    params.setVerbosityLM("SILENT")
+    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
+    result = optimizer.optimize()
 
     optimized = np.zeros((N, 4, 4))
     for i in range(N):
