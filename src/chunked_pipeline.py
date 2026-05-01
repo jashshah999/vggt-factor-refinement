@@ -236,22 +236,34 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
                 graph.addPriorPose3(key_i, _mat_to_pose3(aligned), noise)
 
     # Loop closure: find distant frame pairs with visual overlap
+    # Use robust noise (Cauchy) so bad loop closures don't dominate
     if images is not None:
         from .factor_graph import _count_match_inliers
         positions = init_poses[:, :3, 3]
-        for i in range(N):
-            for j in range(i + 15, N):
+        lc_candidates = []
+        for i in range(0, N, 3):  # sample every 3rd frame to limit O(N^2)
+            for j in range(i + 20, N, 3):
                 dist = np.linalg.norm(positions[i] - positions[j])
-                if dist < 1.5:
+                if dist < 1.0:
                     n_inliers = _count_match_inliers(images[i], images[j])
-                    if n_inliers >= 40:
-                        ki = gtsam.symbol("x", i)
-                        kj = gtsam.symbol("x", j)
-                        rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
-                        noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.05)
-                        graph.add(gtsam.BetweenFactorPose3(
-                            ki, kj, _mat_to_pose3(rel), noise
-                        ))
+                    if n_inliers >= 50:
+                        lc_candidates.append((i, j, n_inliers))
+
+        # Keep top-k by inlier count
+        lc_candidates.sort(key=lambda x: -x[2])
+        lc_candidates = lc_candidates[:30]
+
+        for i, j, n_inliers in lc_candidates:
+            ki = gtsam.symbol("x", i)
+            kj = gtsam.symbol("x", j)
+            rel = np.linalg.inv(init_poses[i]) @ init_poses[j]
+            base_noise = gtsam.noiseModel.Isotropic.Sigma(6, 0.2)
+            robust_noise = gtsam.noiseModel.Robust.Create(
+                gtsam.noiseModel.mEstimator.Cauchy.Create(1.0), base_noise
+            )
+            graph.add(gtsam.BetweenFactorPose3(
+                ki, kj, _mat_to_pose3(rel), robust_noise
+            ))
 
     # Optimize with Levenberg-Marquardt
     params = gtsam.LevenbergMarquardtParams()
