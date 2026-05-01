@@ -324,32 +324,42 @@ def _factor_graph_stitch(chunks: list, N: int, images: np.ndarray = None) -> np.
 
         print(f"    {n_verified} loop closures added ({n_cross_chunk} cross-chunk with 3D alignment)")
 
-    # Two-phase optimization:
-    # Phase 1: without robust noise to allow large corrections from loop closures
-    # Phase 2: with robust noise to downweight outliers
     print(f"    Graph has {graph.size()} factors, {values.size()} variables")
 
-    initial_error = graph.error(values)
-    print(f"    Initial error: {initial_error:.2f}")
+    # Use iSAM2 for incremental optimization which handles large corrections
+    # better than batch LM on a graph with conflicting constraints
+    isam = gtsam.ISAM2(gtsam.ISAM2Params())
 
-    params = gtsam.LevenbergMarquardtParams()
-    params.setMaxIterations(100)
-    params.setVerbosityLM("SILENT")
-    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
-    result = optimizer.optimize()
+    # Add factors in batches: first odometry, then loop closures
+    odom_graph = gtsam.NonlinearFactorGraph()
+    lc_graph = gtsam.NonlinearFactorGraph()
+    for k in range(graph.size()):
+        factor = graph.at(k)
+        # Prior factors and between factors with keys close together are odometry
+        if factor.keys().size() == 1:
+            odom_graph.add(factor)
+        elif factor.keys().size() == 2:
+            key0 = factor.keys().at(0)
+            key1 = factor.keys().at(1)
+            idx0 = gtsam.Symbol(key0).index()
+            idx1 = gtsam.Symbol(key1).index()
+            if abs(int(idx0) - int(idx1)) <= 2:
+                odom_graph.add(factor)
+            else:
+                lc_graph.add(factor)
 
-    final_error = graph.error(result)
-    print(f"    Final error: {final_error:.2f} (reduction: {(1 - final_error/max(initial_error, 1e-10))*100:.1f}%)")
+    # Phase 1: optimize with odometry only
+    isam.update(odom_graph, values)
+    for _ in range(3):
+        isam.update()
 
-    # Check if poses actually changed
-    max_pose_change = 0.0
-    for i in range(N):
-        key = gtsam.symbol("x", i)
-        init_t = values.atPose3(key).translation()
-        final_t = result.atPose3(key).translation()
-        change = np.linalg.norm(np.array([init_t[0]-final_t[0], init_t[1]-final_t[1], init_t[2]-final_t[2]]))
-        max_pose_change = max(max_pose_change, change)
-    print(f"    Max pose change: {max_pose_change:.6f}m")
+    # Phase 2: add loop closures incrementally
+    if lc_graph.size() > 0:
+        isam.update(lc_graph, gtsam.Values())
+        for _ in range(10):
+            isam.update()
+
+    result = isam.calculateEstimate()
 
     optimized = np.zeros((N, 4, 4))
     for i in range(N):
