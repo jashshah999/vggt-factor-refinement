@@ -148,13 +148,13 @@ def main():
     ax.set_ylim(0, None)
 
     plt.tight_layout()
-    save_path = os.path.join(args.output, f"scaling_{args.dataset}_{args.seq}.png")
+    save_path = os.path.join(args.output, f"scaling_{args.dataset}_{args.seq.replace('/', '_')}.png")
     plt.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"\nSaved scaling plot to {save_path}")
 
     # Save raw results
-    with open(os.path.join(args.output, f"scaling_{args.dataset}_{args.seq}.json"), "w") as f:
+    with open(os.path.join(args.output, f"scaling_{args.dataset}_{args.seq.replace('/', '_')}.json"), "w") as f:
         json.dump(results, f, indent=2)
 
     # Print summary table
