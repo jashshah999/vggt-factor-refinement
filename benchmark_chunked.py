@@ -72,17 +72,25 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--data-root", default="data")
     parser.add_argument("--output", default="output/chunked")
+    parser.add_argument("--dataset", default="tum", choices=["tum", "replica"])
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
-    print(f"  Chunked Benchmark: TUM-RGBD {args.seq}")
+    print(f"  Chunked Benchmark: {args.dataset} {args.seq}")
     print(f"  Chunk size: {args.chunk_size}, Overlap: {args.overlap}")
     print(f"{'='*60}\n")
 
-    data = load_tum_sequence(
-        args.seq, data_root=args.data_root,
-        stride=args.stride, max_frames=args.max_frames,
-    )
+    if args.dataset == "replica":
+        from src.replica_loader import load_replica_sequence
+        data = load_replica_sequence(
+            args.seq, data_root=args.data_root,
+            stride=args.stride, max_frames=args.max_frames,
+        )
+    else:
+        data = load_tum_sequence(
+            args.seq, data_root=args.data_root,
+            stride=args.stride, max_frames=args.max_frames,
+        )
     print(f"  {len(data['images'])} frames, {data['W']}x{data['H']}")
 
     results = run_chunked_pipeline(
