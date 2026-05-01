@@ -97,8 +97,7 @@ def make_trajectory_gif(naive_poses, fg_poses, save_path, n_frames_anim=60):
         ax.grid(alpha=0.3)
 
         fig.canvas.draw()
-        w, h = fig.canvas.get_width_height()
-        img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+        img = np.array(fig.canvas.renderer.buffer_rgba())[:, :, :3]
         frames.append(img)
         plt.close()
 
