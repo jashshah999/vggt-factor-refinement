@@ -90,8 +90,8 @@ def run_chunked_pipeline(
         results["naive_ate"] = naive_metrics
         print(f"  Naive ATE: {naive_metrics['ate_mean']:.4f}m")
 
-    # === Step 3: Factor graph stitching ===
-    print("Step 3: Factor graph stitching...")
+    # === Step 3: Factor graph stitching (SE(3)/Sim(3)) ===
+    print("Step 3: Factor graph stitching (SE3)...")
     t0 = time.time()
 
     fg_poses = _factor_graph_stitch(chunks, N, images)
@@ -101,7 +101,24 @@ def run_chunked_pipeline(
     if gt_poses is not None:
         fg_metrics = absolute_trajectory_error(gt_poses, fg_poses)
         results["fg_ate"] = fg_metrics
-        print(f"  Factor graph ATE: {fg_metrics['ate_mean']:.4f}m")
+        print(f"  Factor graph (SE3) ATE: {fg_metrics['ate_mean']:.4f}m")
+
+    # === Step 3b: SL(4) factor graph (handles projective ambiguity) ===
+    try:
+        from .sl4_graph import build_sl4_graph
+        print("Step 3b: SL(4) factor graph (with planarity fallback)...")
+        t0 = time.time()
+
+        sl4_poses = build_sl4_graph(chunks, naive_poses, images, N)
+        results["timings"]["sl4_graph"] = time.time() - t0
+        results["sl4_poses"] = sl4_poses
+
+        if gt_poses is not None:
+            sl4_metrics = absolute_trajectory_error(gt_poses, sl4_poses)
+            results["sl4_ate"] = sl4_metrics
+            print(f"  Factor graph (SL4) ATE: {sl4_metrics['ate_mean']:.4f}m")
+    except Exception as e:
+        print(f"  SL(4) graph failed: {e}")
 
         improvement = (naive_metrics["ate_mean"] - fg_metrics["ate_mean"]) / naive_metrics["ate_mean"] * 100
         print(f"  Improvement over naive: {improvement:.1f}%")
