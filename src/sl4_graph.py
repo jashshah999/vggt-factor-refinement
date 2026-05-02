@@ -189,46 +189,10 @@ def build_sl4_graph(
 
             graph.add(BetweenFactorSL4(X(i), X(j), SL4(H_rel), inner_noise))
 
-    # Cross-chunk factors via overlap
-    for c_idx in range(1, len(chunks)):
-        chunk = chunks[c_idx]
-        prev = chunks[c_idx - 1]
-
-        overlap_start = chunk["start"]
-        overlap_end = min(chunk["start"] + (prev["end"] - chunk["start"]), chunk["end"])
-        n_overlap = overlap_end - overlap_start
-
-        if n_overlap < 2:
-            continue
-
-        for k in range(n_overlap):
-            global_i = overlap_start + k
-            # This frame exists in both chunks
-            # prev chunk: index is (prev["end"] - prev["start"]) - n_overlap + k
-            prev_local = (prev["end"] - prev["start"]) - n_overlap + k
-            curr_local = k
-
-            if prev_local < 0 or prev_local >= len(prev["poses_c2w"]):
-                continue
-
-            # Check if scene is planar around this overlap
-            pts = chunk["points"][curr_local]
-            conf = chunk["point_conf"][curr_local]
-            valid = pts[conf > 0.3]
-            valid = valid[np.isfinite(valid).all(axis=-1)]
-
-            if len(valid) > 100 and is_planar(valid[::10]):
-                n_sim3_fallback += 1
-                # Use Sim(3) between factor (convert to SL4 as identity-ish)
-                H_rel = normalize_to_sl4(np.eye(4))
-            else:
-                n_sl4 += 1
-                # Use the overlap poses to compute SL(4) relative homography
-                H_prev = np.linalg.inv(prev["poses_c2w"][prev_local])
-                H_curr = np.linalg.inv(chunk["poses_c2w"][curr_local])
-                H_rel = normalize_to_sl4(np.linalg.inv(H_prev) @ H_curr)
-
-            graph.add(BetweenFactorSL4(X(global_i), X(global_i), SL4(H_rel), intra_noise))
+    # Cross-chunk consistency: overlapping frames get odometry from both
+    # chunks. The within-chunk odometry factors above already handle this
+    # since both chunks contribute between-factors for the overlap frames.
+    # No additional factors needed for overlap.
 
     # Loop closure factors
     if images is not None:
