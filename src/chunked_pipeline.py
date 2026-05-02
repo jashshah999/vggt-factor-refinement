@@ -103,10 +103,13 @@ def run_chunked_pipeline(
         results["fg_ate"] = fg_metrics
         print(f"  Factor graph (SE3) ATE: {fg_metrics['ate_mean']:.4f}m")
 
-    # === Step 3b: SL(4) factor graph (handles projective ambiguity) ===
+    # === Step 3b: SL(4) factor graph (for uncalibrated cameras) ===
+    # SL(4) handles the full 15-DOF projective ambiguity between chunks.
+    # Only useful when intrinsics are unknown. For calibrated cameras,
+    # SE(3) is strictly better (fewer DOF, tighter optimization).
     try:
         from .sl4_graph import build_sl4_graph
-        print("Step 3b: SL(4) factor graph (with planarity fallback)...")
+        print("Step 3b: SL(4) factor graph (uncalibrated mode)...")
         t0 = time.time()
 
         sl4_poses = build_sl4_graph(chunks, naive_poses, images, N)
