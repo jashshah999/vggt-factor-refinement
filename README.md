@@ -89,12 +89,16 @@ Long video (100+ frames)
     |
     v
 [Build GTSAM factor graph]
-  - Within-chunk odometry (tight noise, VGGT is good locally)
-  - Cross-chunk overlap constraints
-  - Loop closures (ORB matching for verification, Cauchy robust kernel)
+  - Within-chunk odometry (confidence-weighted noise)
+  - Cross-chunk overlap constraints (Cauchy robust kernel)
+  - DINOv2 appearance loop closure + ORB geometric verification
+  - Covisibility graph loop closure (3D overlap detection)
     |
     v
-[Levenberg-Marquardt optimization] --> refined global trajectory
+[iSAM2 incremental optimization] --> refined global trajectory
+    |
+    v
+[Optional: Sparse point BA] --> jointly refined poses + landmarks
     |
     v
 [Initialize Gaussians from VGGT point maps]
@@ -137,13 +141,42 @@ A factor graph provides all three. It takes VGGT's output as initial estimates a
 - **Cross-chunk relative poses.** Loop closure relative poses are currently derived from the naive-stitched trajectory, which is circular when drift is large. Properly computing independent cross-chunk relative poses (e.g. via SL(4) alignment like VGGT-SLAM) would improve long-sequence performance.
 - **Repetitive textures.** DINOv2 can match frames that look similar but are in different locations (e.g. white walls). The ORB geometric verification catches some of these but not all. A place recognition model trained specifically for loop closure (NetVLAD, CosPlace) would be more robust.
 
+## Architecture
+
+```
+src/
+├── chunked_pipeline.py    # Main pipeline orchestrator
+├── factor_graph.py        # Batch LM factor graph (original)
+├── isam2_backend.py       # iSAM2 incremental solver (NEW)
+├── covisibility.py        # 3D covisibility graph for loop closure (NEW)
+├── point_ba.py            # Joint point + pose bundle adjustment (NEW)
+├── loop_closure.py        # DINOv2 appearance-based loop detection
+├── cross_chunk_align.py   # 3D point RANSAC alignment
+├── sl4_graph.py           # SL(4) manifold optimization (uncalibrated)
+├── vggt_wrapper.py        # VGGT model interface
+├── metrics.py             # ATE, RPE evaluation
+├── data_loaders.py        # TUM, Replica dataset loaders
+└── gaussian_render.py     # Gaussian splatting training
+```
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **iSAM2 Backend** | O(log n) incremental updates. Supports online frame addition. |
+| **Covisibility Graph** | Detects loop closures via shared 3D regions (works even with large drift). |
+| **Point BA** | Joint optimization of poses + sparse landmark points for cross-submap consistency. |
+| **Robust Kernels** | Cauchy/Huber M-estimators on all factors for outlier rejection. |
+| **Confidence Weighting** | VGGT depth confidence → per-factor noise scaling. |
+| **DINOv2 + ORB Verification** | Appearance matching + geometric check prevents false loop closures. |
+| **Auto VRAM Detection** | Adjusts chunk size based on available GPU memory. |
+
 ## Future Work
 
-- [ ] Independent cross-chunk relative pose estimation via 3D point cloud alignment in a shared coordinate frame
 - [ ] Learned confidence-to-covariance mapping (train a small network to predict per-frame noise from VGGT's confidence maps)
 - [ ] Integration with VGGT's built-in bundle adjustment for hybrid feed-forward + optimization
 - [ ] Support for other feed-forward models (DUSt3R, MASt3R, Spann3R) as the chunking frontend
-- [ ] Incremental iSAM2 backend for real-time processing
+- [ ] Test-time adaptation of VGGT on per-scene photometric consistency
 
 ## Related Work
 
@@ -153,7 +186,7 @@ A factor graph provides all three. It takes VGGT's output as initial estimates a
 
 ## Requirements
 
-- CUDA GPU with 24GB+ VRAM (for VGGT)
+- CUDA GPU (8GB+ with auto chunk reduction, 24GB for default settings)
 - Python 3.10+
 - GTSAM, gsplat, PyTorch, VGGT
 
