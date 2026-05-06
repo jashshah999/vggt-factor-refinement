@@ -1,28 +1,52 @@
 # VGGT + Factor Graph Refinement
 
-**Foundation models give you a great initialization. Factor graphs give you global consistency.**
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-VGGT predicts camera poses from images in a single forward pass, but it can only process ~15-30 frames at once (24GB GPU). For longer videos, you must chunk and stitch. Naive stitching accumulates drift at chunk boundaries.
+**Video → 3D in one command. No COLMAP. Outputs COLMAP/nerfstudio format directly.**
 
-This project adds a GTSAM factor graph on top of VGGT to enforce global consistency across chunks:
-- Within-chunk odometry factors (tight, since VGGT is accurate locally)
-- Cross-chunk overlap constraints with Cauchy robust kernel
-- Visual loop closure via ORB feature matching
-- LM optimization produces globally consistent trajectory
+VGGT gives you instant poses but OOMs past 50 frames. VGGT-SLAM 2.0 fixes that but requires 4 repos, conda, a missing checkpoint, manual ffmpeg, and a 24GB GPU — and outputs nothing you can actually use downstream.
+
+This project is the practical middle ground:
+
+```bash
+python run.py --video my_phone_video.mp4 --output scene/ --export all
+```
+
+```
+scene/
+├── sparse/0/          # COLMAP format → feed into ANY 3DGS pipeline
+├── transforms.json    # nerfstudio format → splatfacto/nerfacto
+├── scene.ply          # Colored point cloud
+├── scene.splat        # Web viewer (.splat format)
+├── poses_c2w.npy      # Raw poses
+└── summary.json       # Timing + metrics
+```
+
+## Why not VGGT-SLAM 2.0?
+
+| | VGGT-SLAM 2.0 (MIT SPARK) | This project |
+|---|---|---|
+| **Install** | conda + 4 git clones + hunt for SALAD checkpoint | `pip install gtsam` + clone this repo |
+| **Input** | Pre-extracted frames (manual ffmpeg) | Direct video file |
+| **GPU** | 24GB minimum (crashes on 12GB) | 8GB+ (auto chunk sizing) |
+| **Output** | Viser visualization only | COLMAP, nerfstudio, PLY, .splat |
+| **Metric scale** | No | Optional (MoGe-2 alignment) |
+| **COLMAP export** | No ([issue #10](https://github.com/MIT-SPARK/VGGT-SLAM/issues/10) — unanswered) | Yes |
+| **Point cloud save** | No ([issue #24](https://github.com/MIT-SPARK/VGGT-SLAM/issues/24)) | Yes |
+| **Gaussian splatting** | No | Built-in gsplat training |
+| **Mesh export** | No | TSDF fusion |
+| **Stability** | SL(4) singularity crashes ([issue #5](https://github.com/MIT-SPARK/VGGT-SLAM/issues/5)) | SE(3) + robust kernels (no crashes) |
+
+This is not a research SLAM system. It's a tool for getting usable 3D output from video.
 
 ## Demo
-
-3D point cloud with camera frustums on TUM fr1/desk. Green = ground truth, blue = factor graph (ours), red = naive stitching. The factor graph trajectory closely follows ground truth while naive stitching drifts.
 
 ![3D visualization](assets/orbit.gif)
 
 ## Results
 
 ### Pose Accuracy (TUM-RGBD, 80 frames, chunk_size=8)
-
-**fr1/desk: 89.4% ATE reduction**
-
-![fr1/desk](assets/tum_fr1_desk.png)
 
 | Sequence | Naive Stitch ATE | Factor Graph ATE | Improvement |
 |----------|-----------------|------------------|-------------|
@@ -43,11 +67,7 @@ This project adds a GTSAM factor graph on top of VGGT to enforce global consiste
 
 Average improvement: **70.3%** across 9 sequences on 2 datasets.
 
-### Scaling: VGGT Single-Shot vs Chunked + Factor Graph
-
-VGGT single-shot gives the best accuracy but OOMs past ~50 frames on 24GB. Our factor graph pipeline scales to any sequence length while staying close to the single-shot upper bound.
-
-![Scaling](assets/scaling.png)
+### Scaling
 
 | Frames | VGGT Single-Shot | Naive Stitch | Factor Graph (ours) |
 |--------|-----------------|-------------|-------------------|
@@ -58,137 +78,135 @@ VGGT single-shot gives the best accuracy but OOMs past ~50 frames on 24GB. Our f
 | 200 | OOM | 0.132 m | **0.043 m** |
 | 300 | OOM | 0.190 m | **0.056 m** |
 
-At 300 frames, the factor graph achieves 3.4x lower error than naive stitching, and it keeps scaling.
+![Scaling](assets/scaling.png)
 
 ### Gaussian Splatting Render Quality
-
-Better poses lead to better 3D reconstruction. Gaussians trained with factor graph poses produce sharper renders:
-
-![render comparison](assets/render_comparison.png)
 
 | Metric | Naive Poses | Factor Graph Poses | Improvement |
 |--------|-----------|-------------------|-------------|
 | Mean PSNR | 8.16 dB | **13.28 dB** | **+5.12 dB** |
 | Training loss | ~0.50 (stuck) | ~0.16 (converged) | 3x lower |
 
-The naive poses have too much drift for the Gaussians to converge. Factor graph poses are accurate enough for the splatting to produce recognizable renders.
-
-## How It Works
-
-```
-Long video (100+ frames)
-    |
-    v
-[Split into chunks of 8-15 frames]
-    |
-    v
-[VGGT per chunk] --> local poses + depth + 3D point maps
-    |
-    v
-[Naive stitch via overlap alignment] --> initial global trajectory
-    |
-    v
-[Build GTSAM factor graph]
-  - Within-chunk odometry (confidence-weighted noise)
-  - Cross-chunk overlap constraints (Cauchy robust kernel)
-  - DINOv2 appearance loop closure + ORB geometric verification
-  - Covisibility graph loop closure (3D overlap detection)
-    |
-    v
-[iSAM2 incremental optimization] --> refined global trajectory
-    |
-    v
-[Optional: Sparse point BA] --> jointly refined poses + landmarks
-    |
-    v
-[Initialize Gaussians from VGGT point maps]
-[Train with gsplat using refined poses]
-    |
-    v
-Output: globally consistent poses + 3D Gaussian splat reconstruction
-```
+![render comparison](assets/render_comparison.png)
 
 ## Quick Start
 
 ```bash
-# Install dependencies
-pip install gtsam gsplat torch
-cd ~ && git clone https://github.com/facebookresearch/vggt && cd vggt && pip install -e .
-cd ~ && git clone https://github.com/jashshah999/vggt-factor-refinement && cd vggt-factor-refinement
+# Install
+pip install gtsam torch torchvision scipy opencv-python-headless tqdm
+git clone https://github.com/facebookresearch/vggt && cd vggt && pip install -e . && cd ..
+git clone https://github.com/jashshah999/vggt-factor-refinement && cd vggt-factor-refinement
 
-# Benchmark on TUM-RGBD (downloads data automatically)
+# Run on your video (outputs COLMAP + nerfstudio + PLY + .splat)
+python run.py --video my_video.mp4 --output scene/ --export all
+
+# Run on image directory
+python run.py --images path/to/frames/ --output scene/
+
+# Also train Gaussian Splatting
+python run.py --video my_video.mp4 --output scene/ --train-gaussians --train-iters 3000
+
+# Benchmark on TUM-RGBD
 python benchmark_chunked.py --seq fr1/desk --chunk-size 8 --overlap 2
-
-# Gaussian splatting comparison
-python benchmark_gs.py --seq fr1/desk --train-iters 500
-
-# Run on your own video
-python run.py --video my_video.mp4 --output output/
 ```
 
-## Why Factor Graphs?
+## Export Formats
 
-VGGT processes each chunk independently with no mechanism to enforce that:
-1. Overlapping frames from different chunks agree on 3D positions
-2. The trajectory forms a consistent loop when revisiting locations
-3. Chunk boundaries are smooth (no jumps)
+| Format | Flag | Use case |
+|--------|------|----------|
+| COLMAP sparse | `--export colmap` | Feed into gaussian-splatting, nerfstudio, 3DGS |
+| nerfstudio | `--export nerfstudio` | Direct use with splatfacto/nerfacto |
+| PLY | `--export ply` | View in MeshLab, CloudCompare, Blender |
+| .splat | `--export splat` | Web-based 3DGS viewers (antimatter15/splat) |
+| All | `--export all` | Everything above |
 
-A factor graph provides all three. It takes VGGT's output as initial estimates and soft constraints, then optimizes for global consistency. The optimization adds ~2s of compute on top of VGGT inference.
+## How It Works
 
-## Limitations
-
-- **Non-looping trajectories at 200+ frames.** When the camera never revisits a location, loop closures can't correct accumulated drift. The factor graph helps up to ~120 frames via odometry smoothing alone, but plateaus beyond that. Sequences with actual revisits (like TUM fr1/room) work well even at 200+ frames.
-- **Cross-chunk relative poses.** Loop closure relative poses are currently derived from the naive-stitched trajectory, which is circular when drift is large. Properly computing independent cross-chunk relative poses (e.g. via SL(4) alignment like VGGT-SLAM) would improve long-sequence performance.
-- **Repetitive textures.** DINOv2 can match frames that look similar but are in different locations (e.g. white walls). The ORB geometric verification catches some of these but not all. A place recognition model trained specifically for loop closure (NetVLAD, CosPlace) would be more robust.
+```
+Video / Image directory
+    |
+    v
+[Frame extraction + keyframe selection]
+    |
+    v
+[VGGT per chunk (auto-sized for your GPU)]
+    |
+    v
+[Sim(3) overlap stitching (confidence-weighted)]
+    |
+    v
+[iSAM2 factor graph]
+  - Within-chunk odometry (confidence-weighted noise)
+  - Cross-chunk overlap constraints (Cauchy robust kernel)
+  - DINOv2 appearance loop closure + ORB geometric verification
+  - Covisibility graph loop closure (3D voxel overlap)
+    |
+    v
+[Optional: Sparse point BA (200 landmark joint optimization)]
+    |
+    v
+[Export to COLMAP / nerfstudio / PLY / .splat]
+    |
+    v
+[Optional: Train Gaussian Splatting with gsplat]
+```
 
 ## Architecture
 
 ```
 src/
-├── chunked_pipeline.py    # Main pipeline orchestrator
-├── factor_graph.py        # Batch LM factor graph (original)
-├── isam2_backend.py       # iSAM2 incremental solver (NEW)
-├── covisibility.py        # 3D covisibility graph for loop closure (NEW)
-├── point_ba.py            # Joint point + pose bundle adjustment (NEW)
-├── loop_closure.py        # DINOv2 appearance-based loop detection
-├── cross_chunk_align.py   # 3D point RANSAC alignment
-├── sl4_graph.py           # SL(4) manifold optimization (uncalibrated)
-├── vggt_wrapper.py        # VGGT model interface
-├── metrics.py             # ATE, RPE evaluation
-├── data_loaders.py        # TUM, Replica dataset loaders
-└── gaussian_render.py     # Gaussian splatting training
+├── chunked_pipeline.py       # Main orchestrator
+├── factor_graph.py           # Batch LM optimization
+├── isam2_backend.py          # iSAM2 incremental solver
+├── covisibility.py           # 3D covisibility graph
+├── point_ba.py               # Joint point + pose BA
+├── multi_backend.py          # VGGT + MASt3R ensemble
+├── keyframe_selection.py     # Smart frame selection
+├── depth_fusion.py           # Multi-view depth consistency
+├── trajectory_smoothing.py   # SE(3) temporal smoothing
+├── uncertainty.py            # Calibrated pose uncertainty
+├── loop_closure.py           # DINOv2 appearance matching
+├── cross_chunk_align.py      # 3D point RANSAC alignment
+├── sl4_graph.py              # SL(4) for uncalibrated cameras
+├── vggt_wrapper.py           # VGGT model interface
+├── metrics.py                # ATE, RPE evaluation
+├── data_loaders.py           # TUM, Replica loaders
+├── gaussian_render.py        # gsplat training
+└── exporters/
+    ├── colmap_export.py      # COLMAP sparse model (text + binary)
+    ├── nerfstudio_export.py  # transforms.json
+    ├── ply_export.py         # Colored point cloud
+    └── splat_export.py       # .splat format for web viewers
 ```
 
 ## Key Features
 
 | Feature | Description |
 |---------|-------------|
-| **iSAM2 Backend** | O(log n) incremental updates. Supports online frame addition. |
-| **Covisibility Graph** | Detects loop closures via shared 3D regions (works even with large drift). |
-| **Point BA** | Joint optimization of poses + sparse landmark points for cross-submap consistency. |
-| **Robust Kernels** | Cauchy/Huber M-estimators on all factors for outlier rejection. |
-| **Confidence Weighting** | VGGT depth confidence → per-factor noise scaling. |
-| **DINOv2 + ORB Verification** | Appearance matching + geometric check prevents false loop closures. |
-| **Auto VRAM Detection** | Adjusts chunk size based on available GPU memory. |
+| **One-command pipeline** | Video → 3D in a single command |
+| **COLMAP replacement** | Direct COLMAP-format output for any 3DGS pipeline |
+| **8GB GPU support** | Auto-detects VRAM and reduces chunk size |
+| **iSAM2 Backend** | O(log n) incremental optimization |
+| **Covisibility Graph** | Finds loop closures via shared 3D geometry |
+| **Point BA** | Joint pose + landmark optimization |
+| **Multi-backend** | Ensemble VGGT + MASt3R for better coverage |
+| **Robust Kernels** | Cauchy/Huber M-estimators for outlier rejection |
+| **Depth Fusion** | Multi-view consistency filtering |
+| **Trajectory Smoothing** | Spline/Savitzky-Golay/bilateral on SE(3) |
+| **Uncertainty Estimation** | Calibrated 6-DOF pose uncertainty |
 
-## Future Work
+## Limitations
 
-- [ ] Learned confidence-to-covariance mapping (train a small network to predict per-frame noise from VGGT's confidence maps)
-- [ ] Integration with VGGT's built-in bundle adjustment for hybrid feed-forward + optimization
-- [ ] Support for other feed-forward models (DUSt3R, MASt3R, Spann3R) as the chunking frontend
-- [ ] Test-time adaptation of VGGT on per-scene photometric consistency
-
-## Related Work
-
-- [VGGT](https://github.com/facebookresearch/vggt) - the feed-forward model we build on top of
-- [VGGT-SLAM](https://arxiv.org/abs/2505.12549) - concurrent work using SL(4) manifold optimization for uncalibrated cameras (code not yet released)
-- [GTSAM](https://github.com/borglab/gtsam) - the factor graph library powering the optimization
+- Not real-time (batch offline processing)
+- Accuracy below dedicated SLAM systems (ORB-SLAM3, DROID-SLAM) on well-supported sequences
+- Loop closure relative poses derived from stitched trajectory (circular when drift is large)
+- DINOv2 may match repetitive textures incorrectly (ORB verification catches most)
 
 ## Requirements
 
 - CUDA GPU (8GB+ with auto chunk reduction, 24GB for default settings)
 - Python 3.10+
-- GTSAM, gsplat, PyTorch, VGGT
+- PyTorch, GTSAM, VGGT
 
 ## License
 
