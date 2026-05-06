@@ -103,6 +103,63 @@ def run_chunked_pipeline(
         results["fg_ate"] = fg_metrics
         print(f"  Factor graph (SE3) ATE: {fg_metrics['ate_mean']:.4f}m")
 
+    # === Step 3a: iSAM2 incremental backend ===
+    print("Step 3a: iSAM2 incremental refinement...")
+    t0 = time.time()
+
+    from .isam2_backend import ISAM2Backend
+    from .covisibility import build_covisibility_from_chunks
+
+    isam_backend = ISAM2Backend(robust_kernel="cauchy")
+    for chunk in chunks:
+        isam_backend.add_odometry_batch(
+            chunk["poses_c2w"],
+            chunk["pose_conf"],
+            chunk_start=chunk["start"],
+        )
+
+    # Cross-chunk overlap constraints via iSAM2
+    frame_chunks = {}
+    for c_idx, chunk in enumerate(chunks):
+        for k in range(chunk["end"] - chunk["start"]):
+            gi = chunk["start"] + k
+            if gi not in frame_chunks:
+                frame_chunks[gi] = []
+            frame_chunks[gi].append((c_idx, k))
+
+    for gi, chunk_list in frame_chunks.items():
+        if len(chunk_list) >= 2:
+            isam_backend.add_overlap_constraint(gi, naive_poses[gi], sigma=0.1)
+
+    # Covisibility-based loop closure (faster than brute-force DINOv2)
+    covis_graph = build_covisibility_from_chunks(chunks)
+    covis_candidates = covis_graph.find_loop_closure_candidates(
+        min_score=0.15, min_gap=20, max_candidates=50
+    )
+    if covis_candidates:
+        from .factor_graph import _count_match_inliers
+        lc_batch = []
+        for i, j, covis_score in covis_candidates:
+            if images is not None:
+                n_inliers = _count_match_inliers(images[i], images[j])
+                if n_inliers < 30:
+                    continue
+            rel = np.linalg.inv(naive_poses[i]) @ naive_poses[j]
+            lc_batch.append((i, j, rel, 0.15, covis_score))
+
+        isam_backend.add_loop_closures_batch(lc_batch)
+        print(f"    Added {len(lc_batch)} covisibility loop closures")
+
+    isam_backend.optimize(extra_iterations=3)
+    isam_poses = isam_backend.get_poses(N)
+    results["timings"]["isam2"] = time.time() - t0
+    results["isam_poses"] = isam_poses
+
+    if gt_poses is not None:
+        isam_metrics = absolute_trajectory_error(gt_poses, isam_poses)
+        results["isam_ate"] = isam_metrics
+        print(f"  iSAM2 ATE: {isam_metrics['ate_mean']:.4f}m")
+
     # === Step 3b: SL(4) factor graph (for uncalibrated cameras) ===
     # SL(4) handles the full 15-DOF projective ambiguity between chunks.
     # Only useful when intrinsics are unknown. For calibrated cameras,
