@@ -196,6 +196,7 @@ def run_chunked_pipeline(
             results["single_ate"] = single_metrics
             print(f"  Single-shot ATE: {single_metrics['ate_mean']:.4f}m")
 
+    results["chunks"] = chunks
     return results
 
 

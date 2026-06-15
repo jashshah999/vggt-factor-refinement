@@ -141,7 +141,7 @@ def main():
     image_sizes = [(H, W)] * N
 
     # Collect point cloud from chunks
-    points, colors = _collect_points(results, images)
+    points, colors = _collect_points(results, images, poses)
 
     # Export
     os.makedirs(args.output, exist_ok=True)
@@ -218,29 +218,62 @@ def main():
     print(f"  Summary:     {args.output}/summary.json")
 
 
-def _collect_points(results, images):
-    """Collect point clouds from pipeline results."""
-    # Try to get points from the chunks via VGGT world points
-    # For now, return empty if not available from pipeline
-    # The chunked_pipeline stores chunks with 'points' arrays
-    if "chunks" in results:
-        all_pts = []
-        all_colors = []
-        for chunk in results["chunks"]:
-            if "points" in chunk:
-                pts = chunk["points"].reshape(-1, 3)
-                conf = chunk.get("point_conf", np.ones(len(pts))).reshape(-1)
-                valid = (conf > 0.5) & np.isfinite(pts).all(axis=1)
-                all_pts.append(pts[valid])
-                # Use frame colors
-                n_frames = chunk["end"] - chunk["start"]
-                frame_colors = images[chunk["start"]:chunk["end"]].reshape(-1, 3)
-                if len(frame_colors) >= len(pts):
-                    all_colors.append(frame_colors[:len(pts)][valid])
-                else:
-                    all_colors.append(np.ones((valid.sum(), 3)) * 0.5)
-        if all_pts:
-            return np.concatenate(all_pts), np.concatenate(all_colors)
+def _collect_points(results, images, poses):
+    """Collect a globally-aligned, colored point cloud from pipeline chunks.
+
+    VGGT emits per-chunk world points in each chunk's own coordinate frame
+    (independent origin and scale). We align every chunk to the refined global
+    poses with a Sim(3) fit on camera centers before merging, and sample colors
+    at the point-map resolution so colors correspond 1:1 with the points.
+    """
+    from src.chunked_pipeline import _procrustes_sim3
+
+    if "chunks" not in results:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+
+    all_pts = []
+    all_colors = []
+    for chunk in results["chunks"]:
+        pts_grid = chunk.get("points")
+        if pts_grid is None or np.ndim(pts_grid) != 4:
+            continue
+        n, Hv, Wv = pts_grid.shape[:3]
+        conf = chunk.get("point_conf", np.ones((n, Hv, Wv)))
+
+        # Sim(3) mapping chunk-local world coords -> refined global coords,
+        # estimated from camera-center correspondences.
+        gi0 = chunk["start"]
+        local_c = np.asarray(chunk["poses_c2w"])[:, :3, 3]
+        global_c = poses[gi0:gi0 + n, :3, 3]
+        m = min(len(local_c), len(global_c))
+        if m >= 3:
+            T_align, scale = _procrustes_sim3(local_c[:m], global_c[:m])
+            R_align, t_align = T_align[:3, :3], T_align[:3, 3]
+        else:
+            R_align, t_align, scale = np.eye(3), np.zeros(3), 1.0
+
+        for k in range(n):
+            gi = gi0 + k
+            if gi >= len(images):
+                continue
+            pts_k = pts_grid[k].reshape(-1, 3)
+            conf_k = np.asarray(conf[k]).reshape(-1)
+            valid = (conf_k > 0.5) & np.isfinite(pts_k).all(axis=1)
+            if not valid.any():
+                continue
+            pts_v = pts_k[valid]
+            pts_g = (scale * (R_align @ pts_v.T)).T + t_align
+
+            frame = images[gi]
+            if frame.shape[:2] != (Hv, Wv):
+                frame = cv2.resize(frame, (Wv, Hv))
+            colors_v = frame.reshape(-1, 3)[valid]
+
+            all_pts.append(pts_g)
+            all_colors.append(colors_v)
+
+    if all_pts:
+        return np.concatenate(all_pts), np.concatenate(all_colors)
 
     # Fallback: no points available
     return np.zeros((0, 3)), np.zeros((0, 3))
