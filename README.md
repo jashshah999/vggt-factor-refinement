@@ -5,7 +5,7 @@
 
 **Video → 3D in one command. No COLMAP. Outputs COLMAP/nerfstudio format directly.**
 
-VGGT gives you instant poses but OOMs past 50 frames. VGGT-SLAM 2.0 fixes that but requires 4 repos, conda, a missing checkpoint, manual ffmpeg, and a 24GB GPU — and outputs nothing you can actually use downstream.
+VGGT gives you instant poses but OOMs past 50 frames. VGGT-SLAM 2.0 fixes that and runs live, but it is a research SLAM system: it takes image folders, wants ~24GB at default settings, and does not write COLMAP/nerfstudio files you can feed into splatting.
 
 This project is the practical middle ground:
 
@@ -27,18 +27,17 @@ scene/
 
 | | VGGT-SLAM 2.0 (MIT SPARK) | This project |
 |---|---|---|
-| **Install** | conda + 4 git clones + hunt for SALAD checkpoint | `pip install gtsam` + clone this repo |
-| **Input** | Pre-extracted frames (manual ffmpeg) | Direct video file |
-| **GPU** | 24GB minimum (crashes on 12GB) | 8GB+ (auto chunk sizing) |
-| **Output** | Viser visualization only | COLMAP, nerfstudio, PLY, .splat |
+| **Install** | conda env + `setup.sh` (pulls its VGGT fork and optional SAM 3 / Perception Encoder) | `pip install gtsam` + clone this repo |
+| **Input** | Image folder (ffmpeg the video first), or a live RealSense | Video file or image folder |
+| **GPU** | ~24GB at default `submap_size=16` (smaller submaps for less VRAM) | 8GB+ (auto chunk sizing) |
+| **Real-time / live camera** | Yes (`main_realtime.py`, RealSense) | No -- offline, video/image files in, files out |
+| **Output** | Viser visualization + pose/dense point cloud logs (`--log_results`) | COLMAP, nerfstudio, PLY, .splat |
 | **Metric scale** | No | Optional (MoGe-2 alignment) |
-| **COLMAP export** | No ([issue #10](https://github.com/MIT-SPARK/VGGT-SLAM/issues/10) — unanswered) | Yes |
-| **Point cloud save** | No ([issue #24](https://github.com/MIT-SPARK/VGGT-SLAM/issues/24)) | Yes |
+| **COLMAP export** | No ([issue #10](https://github.com/MIT-SPARK/VGGT-SLAM/issues/10): logs poses/points, conversion left to you) | Yes |
 | **Gaussian splatting** | No | Built-in gsplat training |
 | **Mesh export** | No | TSDF fusion |
-| **Stability** | SL(4) singularity crashes ([issue #5](https://github.com/MIT-SPARK/VGGT-SLAM/issues/5)) | SE(3) + robust kernels (no crashes) |
 
-This is not a research SLAM system. It's a tool for getting usable 3D output from video.
+This is not a research SLAM system. It's a tool for getting usable 3D output from video. If you need live tracking from a camera, use VGGT-SLAM 2.0.
 
 ## Demo
 
